@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+
+from app.models.loader import load_model, predict_batch
+from app.utils.tokenizer import encode_text
 
 
 POSITIVE_WORDS = {
@@ -76,7 +80,32 @@ def _keyword_baseline(text: str) -> PredictResult:
 def predict_text(text: str) -> PredictResult:
 	"""对外统一预测入口。
 
-	当前使用关键词基线逻辑，后续可在不改 API 层代码的前提下替换为 LSTM 推理。
+	当前默认走 LSTM 推理分支。
 	"""
-	# 保持统一入口，便于未来平滑切换模型实现。
-	return _keyword_baseline(text)
+	model_path = os.getenv("MODEL_PATH", "sentiment_model.pt")
+	vocab_size = int(os.getenv("MODEL_VOCAB_SIZE", "65536"))
+	max_len = int(os.getenv("MODEL_MAX_LEN", "100"))
+	# 与根目录旧训练脚本默认结构保持一致。
+	embed_dim = int(os.getenv("MODEL_EMBED_DIM", "128"))
+	hidden_dim = int(os.getenv("MODEL_HIDDEN_DIM", "256"))
+	num_layers = int(os.getenv("MODEL_NUM_LAYERS", "2"))
+	dropout = float(os.getenv("MODEL_DROPOUT", "0.5"))
+	pad_idx = int(os.getenv("MODEL_PAD_IDX", "0"))
+
+	load_model(
+		model_path=model_path,
+		vocab_size=vocab_size,
+		embed_dim=embed_dim,
+		hidden_dim=hidden_dim,
+		num_layers=num_layers,
+		dropout=dropout,
+		pad_idx=pad_idx,
+	)
+
+	input_ids = [encode_text(text=text, max_len=max_len, vocab_size=vocab_size)]
+	preds, confs = predict_batch(input_ids)
+	pred = preds[0]
+	score = confs[0]
+	label = "正面" if pred == 1 else "负面"
+
+	return PredictResult(text=text, label=label, score=round(float(score), 4), source="lstm")

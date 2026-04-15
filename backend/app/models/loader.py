@@ -11,6 +11,29 @@ _model = None
 _device = None
 
 
+def _extract_state_dict(ckpt: object) -> dict:
+    """从 checkpoint 中提取模型权重字典。"""
+    if isinstance(ckpt, dict):
+        if "state_dict" in ckpt:
+            return ckpt["state_dict"]
+        if "model_state_dict" in ckpt:
+            return ckpt["model_state_dict"]
+    if isinstance(ckpt, dict):
+        return ckpt
+    raise TypeError("Unsupported checkpoint format.")
+
+
+def _normalize_state_dict_keys(state_dict: dict) -> dict:
+    """兼容旧脚本中 fc 命名，映射到当前 classifier 命名。"""
+    normalized = {}
+    for key, value in state_dict.items():
+        if key.startswith("fc."):
+            normalized[key.replace("fc.", "classifier.", 1)] = value
+        else:
+            normalized[key] = value
+    return normalized
+
+
 def get_device() -> torch.device:
     """选择推理设备。
 
@@ -55,10 +78,9 @@ def load_model(
 
     # 2) 加载权重，兼容不同保存格式。
     ckpt = torch.load(Path(model_path), map_location=_device)
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        model.load_state_dict(ckpt["state_dict"])
-    else:
-        model.load_state_dict(ckpt)
+    state_dict = _extract_state_dict(ckpt)
+    state_dict = _normalize_state_dict_keys(state_dict)
+    model.load_state_dict(state_dict)
 
     # 3) 切换到推理模式并写入缓存。
     model.to(_device)
@@ -88,4 +110,6 @@ def predict_batch(input_ids: List[List[int]]) -> Tuple[List[int], List[float]]:
     probs = torch.softmax(logits, dim=-1)
     conf, pred = torch.max(probs, dim=-1)
 
+    # 转换回列表返回，方便上层调用。
+    # pred 是类别 id 列表，conf 是对应的置信分数列表。
     return pred.tolist(), conf.tolist()
