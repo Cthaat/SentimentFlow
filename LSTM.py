@@ -287,34 +287,61 @@ def predict(text, model, device):
     model.eval()
     with torch.inference_mode():
         output = model(ids)
+        probs = torch.softmax(output, dim=1)[0]
 
     # 输出两个类别里概率更高的那个。
-    pred = torch.argmax(output, dim=1).item()
-    return "正面" if pred == 1 else "负面"
+    neg_score = float(probs[0].item())
+    pos_score = float(probs[1].item())
+    pred = 1 if pos_score >= neg_score else 0
+    label = "正面" if pred == 1 else "负面"
+
+    return {
+        "text": text,
+        "label": label,
+        "confidence": round(max(neg_score, pos_score), 4),
+        "negative_score": round(neg_score, 4),
+        "positive_score": round(pos_score, 4),
+    }
 
 
 if __name__ == "__main__":
-    model, device = load_or_train()
-    print(predict("这个电影太棒了！", model, device))
-    print(predict("这个电影太差了！", model, device))
-    print(predict("这个手机的电池续航很不错！", model, device))
-    print(predict("这个手机的屏幕质量很差！", model, device))
-    print(predict("这个电脑的性能非常给力！", model, device))
-    print(predict("这个电脑的系统经常崩溃！", model, device))
-    print(predict("这个耳机的音质非常清晰！", model, device))
-    print(predict("这个耳机的做工很糟糕！", model, device))
-    print(predict("这个屏幕的显示效果非常好！", model, device))
-    print(predict("这个屏幕的亮度很差！", model, device))
-    print(predict("这个系统的界面非常流畅！", model, device))
-    print(predict("这个系统的响应速度很慢！", model, device))
-    print(predict("这个电池的续航时间非常长！", model, device))
-    print(predict("这个电池的充电速度很慢！", model, device))
-    print(predict("这个物流的配送速度非常快！", model, device))
-    print(predict("这个物流的配送速度很慢！", model, device))
-    print(predict("这个客服的服务态度非常好！", model, device))
-    print(predict("这个客服的服务态度很差！", model, device))
-    print(predict("这个包装的质量非常好！", model, device))
-    print(predict("这个包装的质量很差！", model, device))
-    print(predict("这个做工的质量非常给力！", model, device))
-    print(predict("这个做工的质量很差！", model, device))
+    # 默认强制重训，避免旧 checkpoint 造成“所有输入同一输出”的假象。
+    # 如需跳过训练直接加载，手动设置 FORCE_RETRAIN=0。
+    force_retrain = os.getenv("FORCE_RETRAIN", "1") == "1"
+    if force_retrain:
+        print("FORCE_RETRAIN=1 -> Retraining model and overwriting checkpoint.")
+        model, device = train()
+    else:
+        model, device = load_or_train()
+    samples = [
+        "这个电影太棒了！",
+        "这个电影太差了！",
+        "这个手机的电池续航很不错！",
+        "这个手机的屏幕质量很差！",
+        "这个电脑的性能非常给力！",
+        "这个电脑的系统经常崩溃！",
+        "这个耳机的音质非常清晰！",
+        "这个耳机的做工很糟糕！",
+        "这个屏幕的显示效果非常好！",
+        "这个屏幕的亮度很差！",
+        "这个系统的界面非常流畅！",
+        "这个系统的响应速度很慢！",
+        "这个电池的续航时间非常长！",
+        "这个电池的充电速度很慢！",
+        "这个物流的配送速度非常快！",
+        "这个物流的配送速度很慢！",
+        "这个客服的服务态度非常好！",
+        "这个客服的服务态度很差！",
+        "这个包装的质量非常好！",
+        "这个包装的质量很差！",
+        "这个做工的质量非常给力！",
+        "这个做工的质量很差！",
+    ]
+
+    for text in samples:
+        result = predict(text, model, device)
+        print(
+            f"{result['text']} -> {result['label']} "
+            f"(neg={result['negative_score']:.4f}, pos={result['positive_score']:.4f}, conf={result['confidence']:.4f})"
+        )
 
