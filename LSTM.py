@@ -1,5 +1,6 @@
 import os
 import zlib
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -68,43 +69,57 @@ class Model(nn.Module):
 
 
 class CsvStreamDataset(IterableDataset):
-    # 这个数据集只保存文件路径和 chunk 大小，
-    # 真正读取数据是在迭代的时候进行的。
-    # 这样可以避免一次性占用大量内存。
-    def __init__(self, csv_path, chunk_size=DEFAULT_CHUNK_SIZE):
+    # 同时支持两种输入：
+    # 1) CSV 文件路径（流式分块读取）
+    # 2) HuggingFace Dataset 对象（按索引遍历）
+    def __init__(self, source, chunk_size=DEFAULT_CHUNK_SIZE):
         super().__init__()
-        self.csv_path = csv_path
+        self.source = source
         self.chunk_size = chunk_size
 
     def __iter__(self):
-        # 迭代器真正开始工作时，才从磁盘按 chunk 读取 CSV。
-        # 这样每次只处理一小块数据，适合大文件。
         worker_info = torch.utils.data.get_worker_info()
         worker_id = 0 if worker_info is None else worker_info.id
         num_workers = 1 if worker_info is None else worker_info.num_workers
 
-        chunk_reader = pd.read_csv(
-            self.csv_path,
-            usecols=["text", "label"],
-            dtype={"text": "string", "label": "int8"},
-            chunksize=self.chunk_size,
-        )
+        # 情况 A：CSV 文件路径，按 chunk 流式读取。
+        if isinstance(self.source, (str, Path)):
+            chunk_reader = pd.read_csv(
+                self.source,
+                usecols=["text", "label"],
+                dtype={"text": "string", "label": "int8"},
+                chunksize=self.chunk_size,
+            )
 
-        for chunk_index, chunk in enumerate(chunk_reader):
-            # 多 worker 之间分片，避免不同 worker 读到同一块数据。
-            if chunk_index % num_workers != worker_id:
-                continue
+            for chunk_index, chunk in enumerate(chunk_reader):
+                # 多 worker 之间分片，避免不同 worker 读到同一块数据。
+                if chunk_index % num_workers != worker_id:
+                    continue
 
-            # chunk 内部再打乱一次，减少样本顺序太固定带来的影响。
-            chunk = chunk.sample(frac=1).reset_index(drop=True)
+                # chunk 内部再打乱一次，减少样本顺序太固定带来的影响。
+                chunk = chunk.sample(frac=1).reset_index(drop=True)
 
-            # 文本列和标签列分别取出来，方便逐条编码和训练。
-            texts = chunk["text"].fillna("").astype(str).tolist()
-            labels = chunk["label"].to_numpy(dtype="int64")
+                # 文本列和标签列分别取出来，方便逐条编码和训练。
+                texts = chunk["text"].fillna("").astype(str).tolist()
+                labels = chunk["label"].to_numpy(dtype="int64")
 
-            for text, label in zip(texts, labels):
-                # 每次 yield 一条样本，DataLoader 会自动把多条样本拼成 batch。
+                for text, label in zip(texts, labels):
+                    yield torch.tensor(encode_text(text), dtype=torch.long), torch.tensor(label, dtype=torch.long)
+
+            return
+
+        # 情况 B：HuggingFace Dataset（或任何支持 __len__ / __getitem__ 的对象）。
+        if hasattr(self.source, "__len__") and hasattr(self.source, "__getitem__"):
+            total = len(self.source)
+            for idx in range(worker_id, total, num_workers):
+                row = self.source[idx]
+                text = str(row.get("text", ""))
+                label = int(row.get("label", 0))
                 yield torch.tensor(encode_text(text), dtype=torch.long), torch.tensor(label, dtype=torch.long)
+
+            return
+
+        raise TypeError(f"Unsupported dataset source type: {type(self.source)!r}")
 
 
 def train():
@@ -135,9 +150,12 @@ def train():
     grad_accum_steps = int(os.getenv("TRAIN_ACCUM_STEPS", "4" if device.type == "cuda" else "1"))
     chunk_size = int(os.getenv("TRAIN_CHUNK_SIZE", str(max(batch_size * 8, DEFAULT_CHUNK_SIZE))))
 
+    from datasets import load_dataset
+
+    ds = load_dataset("lansinuote/ChnSentiCorp")
     # chunk_size 越大，每次读盘越少，但单次 CPU 内存峰值也会更高。
     # 如果你机器内存偏小，就不要把它设得太大。
-    dataset = CsvStreamDataset("data.csv", chunk_size=chunk_size)
+    dataset = CsvStreamDataset(ds["train"].shuffle(seed=42).select([i for i in list(range(9600))]), chunk_size=chunk_size)
     loader_kwargs = {
         "batch_size": batch_size,
         "num_workers": max(0, num_workers),
