@@ -11,6 +11,35 @@ _model = None
 _device = None
 
 
+def _resolve_model_path(model_path: str) -> Path:
+    """解析模型文件路径，兼容不同启动目录。"""
+    raw = Path(model_path)
+    backend_dir = Path(__file__).resolve().parents[2]
+    app_models_dir = Path(__file__).resolve().parent
+
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.extend(
+            [
+                Path.cwd() / raw,
+                backend_dir / raw,
+                app_models_dir / raw.name,
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    search_list = "\n".join(str(path) for path in candidates)
+    raise FileNotFoundError(
+        "Model checkpoint not found. "
+        f"MODEL_PATH={model_path!r}. Tried:\n{search_list}"
+    )
+
+
 def _extract_state_dict(ckpt: object) -> dict:
     """从 checkpoint 中提取模型权重字典。"""
     if isinstance(ckpt, dict):
@@ -77,7 +106,8 @@ def load_model(
     )
 
     # 2) 加载权重，兼容不同保存格式。
-    ckpt = torch.load(Path(model_path), map_location=_device)
+    ckpt_path = _resolve_model_path(model_path)
+    ckpt = torch.load(ckpt_path, map_location=_device)
     state_dict = _extract_state_dict(ckpt)
     state_dict = _normalize_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)

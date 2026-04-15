@@ -7,6 +7,7 @@
 
 from app.models.lstm import SentimentLSTM
 from app.models.loader import load_model, predict_batch
+from app.models.LSTMtraning import retrain_and_replace_model
 
 # 对外公开的模型层 API，供 service 层或启动阶段调用。
-__all__ = ["SentimentLSTM", "load_model", "predict_batch"]
+__all__ = ["SentimentLSTM", "load_model", "predict_batch", "retrain_and_replace_model"]
