@@ -1,28 +1,19 @@
+import os
+
 import pandas as pd
-import jieba
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
-df = pd.read_csv('data.csv')
 
-def tokenize(test):
-    return list(jieba.cut(test))
+MAX_LEN = 100
+BATCH_SIZE = 8192
+EPOCHS = 10
 
-df["tokens"] = df["text"].apply(tokenize)
 
-vocab = {}
-idx = 1
+def tokenize(text):
+    return list(str(text).strip())
 
-for tokens in df["tokens"]:
-    for word in tokens:
-        if word not in vocab:
-            vocab[word] = idx
-            idx += 1
-            
-def encode(tokens):
-    return [vocab[word] for word in tokens]
-
-df["input"] = df["tokens"].apply(encode)
 
 def pad_sequences(sequences, maxlen, padding_value=0):
     padded_sequences = []
@@ -36,8 +27,13 @@ def pad_sequences(sequences, maxlen, padding_value=0):
 
     return padded_sequences
 
-X = pad_sequences(df["input"], maxlen=100)
-Y = df["label"].values
+
+def encode_text(text, vocab, maxlen=MAX_LEN):
+    ids = [vocab.get(token, 0) for token in tokenize(text)]
+    if len(ids) >= maxlen:
+        return ids[:maxlen]
+    return ids + [0] * (maxlen - len(ids))
+
 
 class Model(nn.Module):
     def __init__(self, vocab_size):
@@ -45,54 +41,113 @@ class Model(nn.Module):
         self.embedding = nn.Embedding(vocab_size, 128)
         self.lstm = nn.LSTM(128, 256, num_layers=2, dropout=0.5, batch_first=True)
         self.fc = nn.Linear(256, 2)
-    
+
     def forward(self, x):
         x = self.embedding(x)
         _, (h, _) = self.lstm(x)
         out = self.fc(h[-1])
         return out
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = Model(len(vocab) + 1).to(device)
 
-loss_fn = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+def build_vocab(texts):
+    vocab = {}
+    idx = 1
 
-X_tensor = torch.tensor(X, dtype=torch.long).to(device)
-Y_tensor = torch.tensor(Y, dtype=torch.long).to(device)
+    for text in texts:
+        for token in tokenize(text):
+            if token not in vocab:
+                vocab[token] = idx
+                idx += 1
 
-from torch.utils.data import DataLoader, TensorDataset
-dataset = TensorDataset(X_tensor, Y_tensor)
-loader = DataLoader(dataset, batch_size=4096, shuffle=True, num_workers=4, pin_memory=True)
+    return vocab
 
-for epoch in range(10):
-    total_loss = 0
-    for batch_x, batch_y in loader:
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.to(device)
-        
-        output = model(batch_x)
-        loss = loss_fn(output, batch_y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        total_loss += loss.item()
-    print(f"Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
 
-def predict(text):
-    tokens = list(jieba.cut(text))
-    ids = [vocab.get(w, 0) for w in tokens]
-    ids = pad_sequences([ids], maxlen=100)
-    ids = torch.tensor(ids, dtype=torch.long).to(device)
-    
+def prepare_data(csv_path):
+    df = pd.read_csv(csv_path, usecols=["text", "label"], dtype={"text": "string", "label": "int8"})
+    texts = df["text"].fillna("").astype(str).tolist()
+    labels = df["label"].to_numpy(dtype="int64")
+
+    vocab = build_vocab(texts)
+    encoded_inputs = [encode_text(text, vocab) for text in texts]
+
+    x_tensor = torch.tensor(encoded_inputs, dtype=torch.long)
+    y_tensor = torch.tensor(labels, dtype=torch.long)
+    return x_tensor, y_tensor, vocab
+
+
+def train():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+
+    x_tensor, y_tensor, vocab = prepare_data("data.csv")
+
+    dataset = TensorDataset(x_tensor, y_tensor)
+    num_workers = min(8, os.cpu_count() or 0)
+    loader_kwargs = {
+        "batch_size": BATCH_SIZE,
+        "shuffle": True,
+        "num_workers": num_workers,
+        "pin_memory": device.type == "cuda",
+        "drop_last": True,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 4
+
+    loader = DataLoader(dataset, **loader_kwargs)
+
+    model = Model(len(vocab) + 1).to(device)
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
+
+    model.train()
+    for epoch in range(EPOCHS):
+        total_loss = torch.zeros((), device=device)
+
+        for batch_x, batch_y in loader:
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+                output = model(batch_x)
+                loss = loss_fn(output, batch_y)
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.detach()
+
+        print(f"Epoch {epoch + 1}, Loss: {(total_loss / len(loader)).item():.4f}")
+
+    return model, vocab, device
+
+
+def predict(text, model, vocab, device):
+    ids = encode_text(text, vocab)
+    ids = torch.tensor([ids], dtype=torch.long).to(device, non_blocking=True)
+
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         output = model(ids)
-    
+
     pred = torch.argmax(output, dim=1).item()
     return "正面" if pred == 1 else "负面"
 
-print(predict("这个电影太棒了！"))
-print(predict("这个电影太差了！"))
+
+if __name__ == "__main__":
+    model, vocab, device = train()
+    print(predict("这个电影太棒了！", model, vocab, device))
+    print(predict("这个电影太差了！", model, vocab, device))
 
