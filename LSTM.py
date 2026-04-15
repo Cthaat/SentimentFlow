@@ -7,7 +7,6 @@ from torch.utils.data import DataLoader, TensorDataset
 
 
 MAX_LEN = 100
-BATCH_SIZE = 8192
 EPOCHS = 10
 
 
@@ -83,14 +82,16 @@ def train():
         if hasattr(torch, "set_float32_matmul_precision"):
             torch.set_float32_matmul_precision("high")
 
+    batch_size = int(os.getenv("TRAIN_BATCH_SIZE", "16384" if device.type == "cuda" else "8192"))
+    num_workers = int(os.getenv("TRAIN_NUM_WORKERS", str(min(12, max(1, (os.cpu_count() or 1) - 2)) if device.type == "cuda" else min(4, os.cpu_count() or 1))))
+
     x_tensor, y_tensor, vocab = prepare_data("data.csv")
 
     dataset = TensorDataset(x_tensor, y_tensor)
-    num_workers = min(8, os.cpu_count() or 0)
     loader_kwargs = {
-        "batch_size": BATCH_SIZE,
+        "batch_size": batch_size,
         "shuffle": True,
-        "num_workers": num_workers,
+        "num_workers": max(0, num_workers),
         "pin_memory": device.type == "cuda",
         "drop_last": True,
     }
