@@ -144,17 +144,44 @@ class CsvStreamDataset(IterableDataset):
         raise TypeError(f"Unsupported dataset source type: {type(self.source)!r}")
 
 
-def build_train_split():
-    """加载并可选截断训练集。"""
-    from datasets import load_dataset
+def build_train_split_and_val_split():
+    """加载并拼接多个训练/验证数据集。"""
+    from datasets import concatenate_datasets, load_dataset
 
-    ds = load_dataset("lansinuote/ChnSentiCorp")
-    train_split = ds["train"].shuffle(seed=42)
+    dataset_names = [
+        item.strip()
+        for item in os.getenv("TRAIN_DATASETS", "lansinuote/ChnSentiCorp").split(",")
+        if item.strip()
+    ]
+
+    train_splits = []
+    val_splits = []
+    for name in dataset_names:
+        ds = load_dataset(name)
+        train_splits.append(ds["train"])
+        if "validation" in ds:
+            val_splits.append(ds["validation"])
+        elif "test" in ds:
+            val_splits.append(ds["test"])
+        else:
+            raise ValueError(f"Dataset {name} has neither validation nor test split.")
+
+    train_split = train_splits[0] if len(train_splits) == 1 else concatenate_datasets(train_splits)
+    val_split = val_splits[0] if len(val_splits) == 1 else concatenate_datasets(val_splits)
+    train_split = train_split.shuffle(seed=42)
+    val_split = val_split.shuffle(seed=42)
+
     max_samples = int(os.getenv("TRAIN_MAX_SAMPLES", "0"))
     if max_samples > 0:
         max_samples = min(max_samples, len(train_split))
         train_split = train_split.select(range(max_samples))
-    return train_split
+
+    max_val_samples = int(os.getenv("TRAIN_MAX_VAL_SAMPLES", "0"))
+    if max_val_samples > 0:
+        max_val_samples = min(max_val_samples, len(val_split))
+        val_split = val_split.select(range(max_val_samples))
+
+    return dataset_names, train_split, val_split
 
 
 def get_label_distribution(split) -> Tuple[int, int]:
@@ -220,23 +247,18 @@ def train():
     # - TRAIN_NUM_WORKERS：几个 CPU worker 同时读数据
     # - TRAIN_ACCUM_STEPS：梯度累积步数
     # - TRAIN_CHUNK_SIZE：每次从 CSV 读多少行
+    # - TRAIN_DATASETS：多个 HF 数据集，逗号分隔
+    #   例如：lansinuote/ChnSentiCorp,dataset2
+    # - TRAIN_MAX_SAMPLES / TRAIN_MAX_VAL_SAMPLES：可选截断样本数
     batch_size = int(os.getenv("TRAIN_BATCH_SIZE", "256" if device.type == "cuda" else "128"))
     num_workers = int(os.getenv("TRAIN_NUM_WORKERS", "1" if device.type == "cuda" else "0"))
     grad_accum_steps = int(os.getenv("TRAIN_ACCUM_STEPS", "1"))
     chunk_size = int(os.getenv("TRAIN_CHUNK_SIZE", str(max(batch_size * 8, DEFAULT_CHUNK_SIZE))))
 
-    from datasets import load_dataset
-
-    ds = load_dataset("lansinuote/ChnSentiCorp")
-    train_split = ds["train"].shuffle(seed=42)
-    val_split = ds["validation"] if "validation" in ds else ds["test"]
-
-    max_samples = int(os.getenv("TRAIN_MAX_SAMPLES", "0"))
-    if max_samples > 0:
-        max_samples = min(max_samples, len(train_split))
-        train_split = train_split.select(range(max_samples))
+    dataset_names, train_split, val_split = build_train_split_and_val_split()
     neg_count, pos_count = get_label_distribution(train_split)
     total_count = max(1, neg_count + pos_count)
+    print(f"Datasets: {', '.join(dataset_names)}")
     print(
         f"Train samples: {total_count}, neg={neg_count}, pos={pos_count}, "
         f"pos_ratio={pos_count / total_count:.4f}"
@@ -472,6 +494,17 @@ if __name__ == "__main__":
         "这个包装的质量很差！",
         "这个做工的质量非常给力！",
         "这个做工的质量很差！",
+        # 一些英文数据集
+        "I love this product! It's amazing.",
+        "I hate this product! It's terrible.",
+        "This is a great movie!",
+        "This is a terrible movie!",
+        "The battery life is amazing!",
+        "The battery life is awful!",
+        "The screen quality is fantastic!",
+        "The screen quality is poor!",
+        "The performance is excellent!",
+        "The performance is terrible!",
     ]
 
     for text in samples:
