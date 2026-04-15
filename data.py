@@ -61,4 +61,4 @@ def generate_to_csv(file_path, total_size, chunk_size=10000):
             print(f"已生成 {i + chunk_size} 条数据")
 
 # 🚀 一键生成 100万数据
-generate_to_csv('data.csv', total_size=20_000_000)
+generate_to_csv('data.csv', total_size=10_000)
