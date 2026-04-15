@@ -11,20 +11,31 @@ class SentimentLSTM(nn.Module):
 
     def __init__(
         self,
+        # 模型参数，后续可通过配置文件或环境变量传入。
         vocab_size: int,
+        # 词嵌入维度，影响模型对语义的捕捉能力和训练效率。
         embed_dim: int = 128,
+        # LSTM 隐藏层维度，影响模型容量和表达能力。
         hidden_dim: int = 128,
+        # LSTM 层数，增加层数可提升模型复杂度但可能导致过拟合。
         num_layers: int = 1,
+        # 分类类别数，默认为二分类（正面/负面），可扩展为多分类。
         num_classes: int = 2,
+        # Dropout 比例，防止过拟合，通常在 0.1-0.5 之间调整。
         dropout: float = 0.3,
+        # padding token id，确保模型正确忽略填充部分的影响。
         pad_idx: int = 0,
+        # 是否使用双向 LSTM，双向可捕捉前后文信息，但会增加模型参数和计算量。
         bidirectional: bool = False,
     ) -> None:
         super().__init__()
         # 将离散 token id 映射为稠密向量表示。
         self.embedding = nn.Embedding(
+            # 词表大小，必须与训练时一致，确保正确加载预训练权重。
             num_embeddings=vocab_size,
+            # 词嵌入维度，影响模型对语义的捕捉能力和训练效率。
             embedding_dim=embed_dim,
+            # padding_idx 参数确保模型在计算时忽略填充 token 的影响。
             padding_idx=pad_idx,
         )
         # 时序编码层，提取文本上下文特征。
