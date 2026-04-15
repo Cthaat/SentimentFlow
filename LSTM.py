@@ -1,6 +1,8 @@
 import os
 import zlib
 from pathlib import Path
+from typing import Tuple
+from copy import deepcopy
 
 import pandas as pd
 import torch
@@ -14,6 +16,26 @@ EPOCHS = 10
 VOCAB_SIZE = 65536
 DEFAULT_CHUNK_SIZE = 4096
 CHECKPOINT_PATH = "sentiment_model.pt"
+
+
+def load_env_file(env_path: Path, override: bool = True) -> None:
+    """显式加载 .env 文件，避免依赖终端注入行为。"""
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+
+        if override or key not in os.environ:
+            os.environ[key] = value
 
 
 # 这份脚本的目标很简单：
@@ -122,6 +144,59 @@ class CsvStreamDataset(IterableDataset):
         raise TypeError(f"Unsupported dataset source type: {type(self.source)!r}")
 
 
+def build_train_split():
+    """加载并可选截断训练集。"""
+    from datasets import load_dataset
+
+    ds = load_dataset("lansinuote/ChnSentiCorp")
+    train_split = ds["train"].shuffle(seed=42)
+    max_samples = int(os.getenv("TRAIN_MAX_SAMPLES", "0"))
+    if max_samples > 0:
+        max_samples = min(max_samples, len(train_split))
+        train_split = train_split.select(range(max_samples))
+    return train_split
+
+
+def get_label_distribution(split) -> Tuple[int, int]:
+    labels = split["label"]
+    neg = sum(1 for x in labels if int(x) == 0)
+    pos = sum(1 for x in labels if int(x) == 1)
+    return neg, pos
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module, split, device: torch.device, batch_size: int = 512) -> Tuple[float, float]:
+    """在验证集上评估 accuracy 与 F1。"""
+    eval_loader = DataLoader(
+        CsvStreamDataset(split),
+        batch_size=batch_size,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+        drop_last=False,
+    )
+
+    model.eval()
+    tp = fp = fn = tn = 0
+    for batch_x, batch_y in eval_loader:
+        batch_x = batch_x.to(device, non_blocking=True)
+        batch_y = batch_y.to(device, non_blocking=True)
+
+        logits = model(batch_x)
+        pred = torch.argmax(logits, dim=1)
+
+        tp += int(((pred == 1) & (batch_y == 1)).sum().item())
+        tn += int(((pred == 0) & (batch_y == 0)).sum().item())
+        fp += int(((pred == 1) & (batch_y == 0)).sum().item())
+        fn += int(((pred == 0) & (batch_y == 1)).sum().item())
+
+    total = max(1, tp + tn + fp + fn)
+    accuracy = (tp + tn) / total
+    precision = tp / max(1, tp + fp)
+    recall = tp / max(1, tp + fn)
+    f1 = 2 * precision * recall / max(1e-12, precision + recall)
+    return accuracy, f1
+
+
 def train():
     # 自动判断当前机器有没有 CUDA。
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,17 +220,35 @@ def train():
     # - TRAIN_NUM_WORKERS：几个 CPU worker 同时读数据
     # - TRAIN_ACCUM_STEPS：梯度累积步数
     # - TRAIN_CHUNK_SIZE：每次从 CSV 读多少行
-    batch_size = int(os.getenv("TRAIN_BATCH_SIZE", "1024" if device.type == "cuda" else "256"))
+    batch_size = int(os.getenv("TRAIN_BATCH_SIZE", "256" if device.type == "cuda" else "128"))
     num_workers = int(os.getenv("TRAIN_NUM_WORKERS", "1" if device.type == "cuda" else "0"))
-    grad_accum_steps = int(os.getenv("TRAIN_ACCUM_STEPS", "4" if device.type == "cuda" else "1"))
+    grad_accum_steps = int(os.getenv("TRAIN_ACCUM_STEPS", "1"))
     chunk_size = int(os.getenv("TRAIN_CHUNK_SIZE", str(max(batch_size * 8, DEFAULT_CHUNK_SIZE))))
 
     from datasets import load_dataset
 
     ds = load_dataset("lansinuote/ChnSentiCorp")
+    train_split = ds["train"].shuffle(seed=42)
+    val_split = ds["validation"] if "validation" in ds else ds["test"]
+
+    max_samples = int(os.getenv("TRAIN_MAX_SAMPLES", "0"))
+    if max_samples > 0:
+        max_samples = min(max_samples, len(train_split))
+        train_split = train_split.select(range(max_samples))
+    neg_count, pos_count = get_label_distribution(train_split)
+    total_count = max(1, neg_count + pos_count)
+    print(
+        f"Train samples: {total_count}, neg={neg_count}, pos={pos_count}, "
+        f"pos_ratio={pos_count / total_count:.4f}"
+    )
+    print(
+        f"Training config: batch_size={batch_size}, grad_accum_steps={grad_accum_steps}, "
+        f"num_workers={num_workers}"
+    )
+
     # chunk_size 越大，每次读盘越少，但单次 CPU 内存峰值也会更高。
     # 如果你机器内存偏小，就不要把它设得太大。
-    dataset = CsvStreamDataset(ds["train"].shuffle(seed=42).select([i for i in list(range(9600))]), chunk_size=chunk_size)
+    dataset = CsvStreamDataset(train_split, chunk_size=chunk_size)
     loader_kwargs = {
         "batch_size": batch_size,
         "num_workers": max(0, num_workers),
@@ -175,14 +268,32 @@ def train():
     model = Model(VOCAB_SIZE).to(device)
 
     # 交叉熵损失用于二分类，是分类任务最常见的损失函数之一。
-    loss_fn = nn.CrossEntropyLoss()
+    # 当类别不平衡时，可打开加权损失降低“全判单一类别”的风险。
+    use_weighted_loss = os.getenv("TRAIN_WEIGHTED_LOSS", "1") == "1"
+    if use_weighted_loss and neg_count > 0 and pos_count > 0:
+        class_weights = torch.tensor(
+            [total_count / (2 * neg_count), total_count / (2 * pos_count)],
+            dtype=torch.float32,
+            device=device,
+        )
+        loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+        print(
+            f"Using weighted loss: neg_w={class_weights[0].item():.4f}, "
+            f"pos_w={class_weights[1].item():.4f}"
+        )
+    else:
+        loss_fn = nn.CrossEntropyLoss()
 
     # AdamW 是比较稳的优化器，通常比普通 SGD 更容易收敛。
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+    learning_rate = float(os.getenv("TRAIN_LR", "0.0005"))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     # 混合精度训练需要 GradScaler，防止 float16 下梯度太小而下溢。
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
+    best_f1 = -1.0
+    best_epoch = -1
+    best_state_dict = None
     model.train()
     for epoch in range(EPOCHS):
         # total_loss 用于打印每个 epoch 的平均训练损失。
@@ -233,19 +344,40 @@ def train():
                 optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
-        # 这里只打印一个 epoch 的平均 loss，方便你看训练是不是在下降。
-        print(f"Epoch {epoch + 1}, Loss: {(total_loss / max(1, batch_count)).item():.4f}")
+        # 每个 epoch 后在验证集评估一次，避免只看 loss 误判效果。
+        val_acc, val_f1 = evaluate(model, val_split, device=device)
+        avg_loss = (total_loss / max(1, batch_count)).item()
+        print(
+            f"Epoch {epoch + 1}, Loss: {avg_loss:.4f}, "
+            f"ValAcc: {val_acc:.4f}, ValF1: {val_f1:.4f}"
+        )
 
-    # 训练结束后保存模型参数。下次启动时可以直接加载，不用重新训练。
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "max_len": MAX_LEN,
-            "vocab_size": VOCAB_SIZE,
-        },
-        CHECKPOINT_PATH,
-    )
-    print(f"Model saved to {CHECKPOINT_PATH}")
+        # evaluate() 内部会切到 eval 模式，这里切回 train，确保下一轮可正常反向传播。
+        model.train()
+
+        # 按验证集 F1 保存最优 checkpoint。
+        if val_f1 >= best_f1:
+            best_f1 = val_f1
+            best_epoch = epoch + 1
+            best_state_dict = deepcopy(model.state_dict())
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "max_len": MAX_LEN,
+                    "vocab_size": VOCAB_SIZE,
+                    "best_val_f1": round(best_f1, 6),
+                    "best_epoch": best_epoch,
+                },
+                CHECKPOINT_PATH,
+            )
+            print(f"Best model updated at epoch {epoch + 1}, ValF1={best_f1:.4f}")
+
+    # 训练结束后回滚到验证集最优权重，避免“最后一轮退化”影响最终预测。
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+        print(f"Loaded best in-memory checkpoint from epoch {best_epoch}, ValF1={best_f1:.4f}")
+
+    print(f"Training finished. Best model saved to {CHECKPOINT_PATH}")
 
     return model, device
 
@@ -298,16 +430,20 @@ def predict(text, model, device):
     return {
         "text": text,
         "label": label,
-        "confidence": round(max(neg_score, pos_score), 4),
-        "negative_score": round(neg_score, 4),
-        "positive_score": round(pos_score, 4),
+        "confidence": round(max(neg_score, pos_score), 6),
+        "negative_score": round(neg_score, 6),
+        "positive_score": round(pos_score, 6),
     }
 
 
 if __name__ == "__main__":
-    # 默认强制重训，避免旧 checkpoint 造成“所有输入同一输出”的假象。
-    # 如需跳过训练直接加载，手动设置 FORCE_RETRAIN=0。
+    # 直接读取项目根目录 .env，确保命令行直跑脚本也能拿到配置。
+    env_path = Path(__file__).resolve().parent / ".env"
+    load_env_file(env_path, override=True)
+
+    # 默认不重训；当 FORCE_RETRAIN=1 时才强制重训并覆盖 checkpoint。
     force_retrain = os.getenv("FORCE_RETRAIN", "1") == "1"
+    print(f"Effective FORCE_RETRAIN={os.getenv('FORCE_RETRAIN', '0')} (from {env_path})")
     if force_retrain:
         print("FORCE_RETRAIN=1 -> Retraining model and overwriting checkpoint.")
         model, device = train()
@@ -342,6 +478,6 @@ if __name__ == "__main__":
         result = predict(text, model, device)
         print(
             f"{result['text']} -> {result['label']} "
-            f"(neg={result['negative_score']:.4f}, pos={result['positive_score']:.4f}, conf={result['confidence']:.4f})"
+            f"(neg={result['negative_score']:.6f}, pos={result['positive_score']:.6f}, conf={result['confidence']:.6f})"
         )
 
