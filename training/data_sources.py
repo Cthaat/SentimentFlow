@@ -199,7 +199,7 @@ def build_train_split_and_val_split():
                         train_split = concatenate_datasets([train_split, short_sentences_ds])
                         neg_short = sum(1 for l in short_labels[:short_samples_to_use] if l == 0)
                         pos_short = sum(1 for l in short_labels[:short_samples_to_use] if l == 1)
-                        print(f"✓ Added {len(short_sentences_ds)} extracted short sentences (neg={neg_short}, pos={pos_short}).")
+                        print(f"Added {len(short_sentences_ds)} extracted short sentences (neg={neg_short}, pos={pos_short}).")
                         print(f"  New train size: {len(train_split)} (long:short = {100*(1-short_ratio):.0f}%:{100*short_ratio:.0f}%)")
                 else:
                     print("Warning: No valid short sentences found in CSV")
@@ -220,7 +220,7 @@ def build_train_split_and_val_split():
             
             # 将合成数据追加到训练集
             train_split = concatenate_datasets([train_split, synthetic_ds])
-            print(f"✓ Added {len(synthetic_ds)} synthetic samples. New train size: {len(train_split)}")
+            print(f"Added {len(synthetic_ds)} synthetic samples. New train size: {len(train_split)}")
         except ImportError:
             print("Warning: Synthetic data generation not available (generate_synthetic_data module not found)")
 

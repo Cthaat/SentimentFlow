@@ -74,11 +74,16 @@ def train_model():
 
     settings = get_runtime_settings(device.type)
     dataset_names, train_split, val_split, label_map = build_train_split_and_val_split()
+    train_size = len(train_split)
+    val_size = len(val_split)
 
     neg_count, pos_count = get_label_distribution(train_split, label_map)
     total_count = max(1, neg_count + pos_count)
 
     print(f"Datasets: {', '.join(dataset_names)}")
+    print("DATA SUMMARY:")
+    print(f"  Total train samples (after merge): {train_size:,}")
+    print(f"  Total val samples: {val_size:,}")
     print(
         f"Train samples: {total_count}, neg={neg_count}, pos={pos_count}, "
         f"pos_ratio={pos_count / total_count:.4f}"
