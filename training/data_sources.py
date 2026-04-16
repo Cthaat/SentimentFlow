@@ -114,6 +114,36 @@ def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = Fa
     return split
 
 
+def _force_balance_binary_split(split, dataset_name: str, split_name: str, seed: int = 42):
+    """将二分类数据集强制下采样为 1:1 平衡。"""
+    neg_split = split.filter(lambda row: int(row["label"]) == 0)
+    pos_split = split.filter(lambda row: int(row["label"]) == 1)
+
+    neg_count = len(neg_split)
+    pos_count = len(pos_split)
+    min_count = min(neg_count, pos_count)
+
+    if min_count == 0:
+        print(
+            f"Warning: Skip force-balance for {dataset_name} {split_name} "
+            f"because one class is empty (neg={neg_count}, pos={pos_count})."
+        )
+        return split
+
+    neg_split = neg_split.shuffle(seed=seed).select(range(min_count))
+    pos_split = pos_split.shuffle(seed=seed).select(range(min_count))
+
+    from datasets import concatenate_datasets
+
+    balanced = concatenate_datasets([neg_split, pos_split]).shuffle(seed=seed)
+    print(
+        f"Force-balanced {dataset_name} {split_name}: "
+        f"neg={min_count}, pos={min_count}, total={len(balanced)} "
+        f"(from neg={neg_count}, pos={pos_count})"
+    )
+    return balanced
+
+
 def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
     """解析标签映射配置。
 
@@ -261,6 +291,11 @@ def build_train_split_and_val_split():
                 f"After mapping filter for {name}: "
                 f"train {len(train_part)}/{train_before}, val {len(val_part)}/{val_before}"
             )
+
+        # 针对 DMSC 强制平衡：仅保留正负样本各一半。
+        if name == "BerlinWang/DMSC":
+            train_part = _force_balance_binary_split(train_part, name, "train", seed=42)
+            val_part = _force_balance_binary_split(val_part, name, "val", seed=43)
 
         train_splits.append(train_part)
         val_splits.append(val_part)
