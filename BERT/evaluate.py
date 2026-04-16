@@ -8,7 +8,37 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from .config import MAX_LEN
 from .dataset import CsvStreamDataset
+from .text_processing import get_tokenizer
+
+
+def bert_collate_fn(batch, max_len: int = MAX_LEN):
+    """批量 tokenize 的 collate 函数 - 模块级定义以支持多进程序列化。
+    
+    Args:
+        batch: List of (text, label) tuples from Dataset
+        max_len: Maximum token sequence length
+    
+    Returns:
+        Dict with input_ids, attention_mask, labels as PyTorch tensors
+    """
+    tokenizer = get_tokenizer()
+    texts, labels = zip(*batch)
+
+    encoded = tokenizer(
+        list(texts),
+        padding=True,
+        truncation=True,
+        max_length=max_len,
+        return_tensors="pt",
+    )
+
+    return {
+        "input_ids": encoded["input_ids"],
+        "attention_mask": encoded["attention_mask"],
+        "labels": torch.tensor(labels, dtype=torch.long),
+    }
 
 
 @torch.no_grad()
@@ -21,12 +51,14 @@ def evaluate(
     label_map: dict | None = None,
 ) -> Tuple[float, float]:
     """在验证集上计算 Accuracy 和 Macro-F1。"""
+    eval_dataset = CsvStreamDataset(split, chunk_size=batch_size * 8, label_map=label_map)
     eval_loader = DataLoader(
-        CsvStreamDataset(split, chunk_size=batch_size * 8, max_len=max_len, label_map=label_map),
+        eval_dataset,
         batch_size=batch_size,
         num_workers=0,
         pin_memory=device.type == "cuda",
         drop_last=False,
+        collate_fn=bert_collate_fn,
     )
 
     model.eval()

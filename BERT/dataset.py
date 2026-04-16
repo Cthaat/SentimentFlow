@@ -10,17 +10,18 @@ import pandas as pd
 import torch
 from torch.utils.data import IterableDataset
 
-from .text_processing import encode_text
-
 
 class CsvStreamDataset(IterableDataset):
-    """把文本样本流式编码成 BERT 可消费张量。"""
+    """流式加载文本样本，仅返回原始数据（不编码）。
+    
+    关键设计：Dataset 返回 (text, label)，让 DataLoader 的 collate_fn 负责批量 tokenize。
+    这样可以一次性处理整个 batch 的数据，避免逐条 tokenizer 调用的性能灾难。
+    """
 
-    def __init__(self, source, chunk_size: int, max_len: int, label_map: dict | None = None):
+    def __init__(self, source, chunk_size: int, label_map: dict | None = None):
         super().__init__()
         self.source = source
         self.chunk_size = chunk_size
-        self.max_len = max_len
         self.label_map = label_map or {}
 
     @staticmethod
@@ -115,15 +116,9 @@ class CsvStreamDataset(IterableDataset):
                             "Expected binary labels [0, 1]."
                         )
 
-                    encoded = encode_text(text, max_len=self.max_len)
-                    yield {
-                        "input_ids": encoded["input_ids"],
-                        "attention_mask": encoded["attention_mask"],
-                        "labels": torch.tensor(mapped_label, dtype=torch.long),
-                    }
-            return
+                    yield text, mapped_label
 
-        if hasattr(self.source, "__len__") and hasattr(self.source, "__getitem__"):
+        elif hasattr(self.source, "__len__") and hasattr(self.source, "__getitem__"):
             total = len(self.source)
             for idx in range(worker_id, total, num_workers):
                 row = self.source[idx]
@@ -145,12 +140,7 @@ class CsvStreamDataset(IterableDataset):
                         "Expected binary labels [0, 1]."
                     )
 
-                encoded = encode_text(text, max_len=self.max_len)
-                yield {
-                    "input_ids": encoded["input_ids"],
-                    "attention_mask": encoded["attention_mask"],
-                    "labels": torch.tensor(mapped_label, dtype=torch.long),
-                }
-            return
+                yield text, mapped_label
 
-        raise TypeError(f"Unsupported dataset source type: {type(self.source)!r}")
+        else:
+            raise TypeError(f"Unsupported dataset source type: {type(self.source)!r}")

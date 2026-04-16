@@ -52,3 +52,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .next
+
+# BERT model files
+bert_sentiment_model/*

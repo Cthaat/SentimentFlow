@@ -190,7 +190,7 @@ def build_train_split_and_val_split():
     dataset_names = [
         item.strip()
         for item in os.getenv(
-            "TRAIN_DATASETS",
+            "BERT_TRAIN_DATASETS",
             "lansinuote/ChnSentiCorp,XiangPan/waimai_10k",
         ).split(",")
         if item.strip()

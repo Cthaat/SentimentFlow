@@ -19,11 +19,11 @@ def run() -> None:
     load_env_file(env_path, override=False)
 
     raw_datasets = os.getenv(
-        "TRAIN_DATASETS",
+        "BERT_TRAIN_DATASETS",
         "lansinuote/ChnSentiCorp,XiangPan/waimai_10k",
     )
     active_datasets = [item.strip() for item in raw_datasets.split(",") if item.strip()]
-    print(f"Active TRAIN_DATASETS ({len(active_datasets)}): {', '.join(active_datasets)}")
+    print(f"Active BERT_TRAIN_DATASETS ({len(active_datasets)}): {', '.join(active_datasets)}")
     print(f"Active BERT_MODEL_NAME: {BERT_MODEL_NAME}")
 
     force_retrain = os.getenv("BERT_FORCE_RETRAIN", os.getenv("FORCE_RETRAIN", "1")) == "1"
