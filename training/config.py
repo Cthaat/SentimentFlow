@@ -15,7 +15,7 @@ MAX_LEN = 100
 EPOCHS = 25
 VOCAB_SIZE = 65536
 DEFAULT_CHUNK_SIZE = 4096
-CHECKPOINT_PATH = "backend/app/models/sentiment_model.pt"
+CHECKPOINT_PATH = "./sentiment_model.pt"
 
 
 @dataclass(frozen=True)
