@@ -52,6 +52,7 @@ def run() -> None:
         from custom_test_cases import CUSTOM_TEST_CASES
         correct = 0
         total = len(CUSTOM_TEST_CASES)
+        print(f"Total custom test cases: {total}")
         
         for text, expected_label in CUSTOM_TEST_CASES:
             result = predict_text(text, model, device, max_len=MAX_LEN, vocab_size=VOCAB_SIZE)
@@ -59,7 +60,7 @@ def run() -> None:
             is_correct = predicted_label == expected_label
             correct += is_correct
             
-            status = "✓" if is_correct else "✗"
+            status = "OK" if is_correct else "NG"
             expected_text = '正面' if expected_label == 1 else '负面'
             print(
                 f"{status} '{text}' -> {result['label']} (expected: {expected_text}, "
