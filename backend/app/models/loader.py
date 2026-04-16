@@ -9,6 +9,8 @@ from app.models.lstm import SentimentLSTM
 # 模型单例缓存：避免每次请求重复加载权重。
 _model = None
 _device = None
+_loaded_ckpt_path: Path | None = None
+_loaded_ckpt_mtime: float | None = None
 
 
 def _resolve_model_path(model_path: str) -> Path:
@@ -88,9 +90,16 @@ def load_model(
     - 后续调用直接返回缓存实例。
     - 兼容两种 checkpoint 格式：state_dict 包装 / 纯权重字典。
     """
-    global _model, _device
-    # 已加载则直接复用，保证服务启动后推理稳定高效。
-    if _model is not None:
+    global _model, _device, _loaded_ckpt_path, _loaded_ckpt_mtime
+    ckpt_path = _resolve_model_path(model_path)
+    ckpt_mtime = ckpt_path.stat().st_mtime
+
+    # 已加载并且 checkpoint 未变化时直接复用。
+    if (
+        _model is not None
+        and _loaded_ckpt_path == ckpt_path
+        and _loaded_ckpt_mtime == ckpt_mtime
+    ):
         return _model
 
     # 1) 选择设备并实例化网络结构。
@@ -106,7 +115,6 @@ def load_model(
     )
 
     # 2) 加载权重，兼容不同保存格式。
-    ckpt_path = _resolve_model_path(model_path)
     ckpt = torch.load(ckpt_path, map_location=_device)
     state_dict = _extract_state_dict(ckpt)
     state_dict = _normalize_state_dict_keys(state_dict)
@@ -117,6 +125,9 @@ def load_model(
     model.eval()
 
     _model = model
+    _loaded_ckpt_path = ckpt_path
+    _loaded_ckpt_mtime = ckpt_mtime
+    print(f"Loaded model checkpoint: {ckpt_path} (mtime={ckpt_mtime:.0f})")
     return _model
 
 

@@ -1,16 +1,18 @@
 import zlib
 from typing import List
 
+import jieba
+
 
 def tokenize(text: str) -> List[str]:
-	"""字符级切分。"""
-	return list(str(text).strip())
+	"""词级切分（与训练侧保持一致）。"""
+	return list(jieba.cut(str(text).strip()))
 
 
 def encode_text(text: str, max_len: int, vocab_size: int) -> List[int]:
 	"""将文本编码为定长 token id 序列。
 
-	编码规则与根目录训练脚本保持一致：
+	编码规则与 training/text_processing.py 保持一致：
 	- 使用 crc32 哈希映射到 [1, vocab_size-1]
 	- 0 作为 padding id
 	"""
