@@ -7,7 +7,12 @@ from typing import Tuple, Dict
 
 
 def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
-    """解析形如 "0:1,1:0,2:0,3:0" 的标签映射配置。"""
+    """解析标签映射配置。
+
+    形如 "0:1,1:0,2:-1,3:-1"：
+    - 0/1 表示映射到二分类标签
+    - -1 表示丢弃该原始标签样本
+    """
     mapping: Dict[int, int] = {}
     for item in raw.split(","):
         pair = item.strip()
@@ -20,9 +25,9 @@ def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
         src, dst = pair.split(":", 1)
         src_label = int(src.strip())
         dst_label = int(dst.strip())
-        if dst_label not in (0, 1):
+        if dst_label not in (-1, 0, 1):
             raise ValueError(
-                f"Invalid target label {dst_label} in '{pair}'. Expected 0 or 1."
+                f"Invalid target label {dst_label} in '{pair}'. Expected -1, 0 or 1."
             )
         mapping[src_label] = dst_label
     if not mapping:
@@ -43,9 +48,9 @@ def get_label_map(dataset_name: str) -> Dict[int, int] | None:
             6: 1, 7: 1, 8: 1, 9: 1, 10: 1  # 正面（26,599 个样本）
         }
     if dataset_name == "dirtycomputer/simplifyweibo_4_moods":
-        # 4类情绪转二分类。默认规则：0=正面，1/2/3=负面。
-        # 可通过环境变量覆盖，例如：SIMPLIFYWEIBO_4_MOODS_LABEL_MAP=0:1,1:0,2:0,3:0
-        raw_map = os.getenv("SIMPLIFYWEIBO_4_MOODS_LABEL_MAP", "0:1,1:0,2:0,3:0")
+        # 4类情绪转二分类。默认规则：保留 0/1，丢弃 2/3（噪声类）。
+        # 可通过环境变量覆盖，例如：SIMPLIFYWEIBO_4_MOODS_LABEL_MAP=0:1,1:0,2:-1,3:-1
+        raw_map = os.getenv("SIMPLIFYWEIBO_4_MOODS_LABEL_MAP", "0:1,1:0,2:-1,3:-1")
         return _parse_label_map_from_env(raw_map)
     return None  # 其他数据集无需映射
 
@@ -111,16 +116,25 @@ def build_train_split_and_val_split():
                 f"auto-split train with TRAIN_VAL_RATIO={val_ratio:.2f}."
             )
 
-        # 如果需要标签映射，在拼接前应用
-        # 注意：使用默认参数避免 lambda 的延迟绑定问题
+        # 如果需要标签映射，在拼接前应用。
+        # 当映射目标为 -1 时，表示丢弃该标签样本（如噪声类）。
         if current_label_map:
             def apply_mapping(row, mapping=current_label_map):
                 row_copy = dict(row)
-                row_copy["label"] = mapping.get(row["label"], row["label"])
+                row_copy["label"] = mapping.get(int(row["label"]), -1)
                 return row_copy
             
             train_part = train_part.map(apply_mapping)
             val_part = val_part.map(apply_mapping)
+
+            train_before = len(train_part)
+            val_before = len(val_part)
+            train_part = train_part.filter(lambda row: int(row["label"]) in (0, 1))
+            val_part = val_part.filter(lambda row: int(row["label"]) in (0, 1))
+            print(
+                f"After mapping filter for {name}: "
+                f"train {len(train_part)}/{train_before}, val {len(val_part)}/{val_before}"
+            )
 
         train_splits.append(train_part)
         val_splits.append(val_part)
