@@ -10,6 +10,12 @@ DATASET_ALIASES = {
     # 用户常写法 -> 可访问的数据集 ID
     "seamew/chnsenticorp_htl_all": "dirtycomputer/ChnSentiCorp_htl_all",
     "dmsc": "BerlinWang/DMSC",
+    # 新增：常见别名
+    "jd_binary_sentiment": "dirtycomputer/JD_review",
+    "jd_reviews": "dirtycomputer/JD_review",
+    "nlpcc_sentiment": "ndiy/NLPCC14-SC",
+    "hotel_reviews_sentiment": "dirtycomputer/ChnSentiCorp_htl_all",
+    "simplified_weibo_sentiment": "dirtycomputer/weibo_senti_100k",
 }
 
 
@@ -35,6 +41,18 @@ def _coerce_binary_label(raw_label, dataset_name: str, label_col: str) -> int:
         if star <= 2:
             return 0
         if star >= 4:
+            return 1
+        return -1
+
+    # JD_review 原始是 1-5 评分，3 星中性，过滤掉。
+    if dataset_name == "dirtycomputer/JD_review" and label_col == "rating":
+        try:
+            rating = int(float(raw_label))
+        except (TypeError, ValueError):
+            return -1
+        if rating <= 2:
+            return 0
+        if rating >= 4:
             return 1
         return -1
 
@@ -233,6 +251,16 @@ def build_train_split_and_val_split():
         name = _resolve_dataset_name(raw_name)
         if name != raw_name:
             print(f"Dataset alias resolved: {raw_name} -> {name}")
+
+        # 仅允许二分类微博数据，默认禁用 4 情绪版。
+        if name == "dirtycomputer/simplifyweibo_4_moods" and os.getenv("ALLOW_SIMPLIFYWEIBO_4_MOODS", "0") != "1":
+            print(
+                "Skip dataset dirtycomputer/simplifyweibo_4_moods: "
+                "4-class mood dataset is disabled by default. "
+                "Use dirtycomputer/weibo_senti_100k for binary sentiment, "
+                "or set ALLOW_SIMPLIFYWEIBO_4_MOODS=1 to force-enable."
+            )
+            continue
 
         try:
             ds = load_dataset(name)

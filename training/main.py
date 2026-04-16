@@ -56,7 +56,7 @@ def run() -> None:
     print("CUSTOM TEST CASES (Quality Verification):")
     print("="*80)
     try:
-        from custom_test_cases import CUSTOM_TEST_CASES
+        from training.custom_test_cases import CUSTOM_TEST_CASES
         correct = 0
         total = len(CUSTOM_TEST_CASES)
         print(f"Total custom test cases: {total}")
