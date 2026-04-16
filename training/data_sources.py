@@ -6,6 +6,114 @@ import os
 from typing import Tuple, Dict
 
 
+DATASET_ALIASES = {
+    # 用户常写法 -> 可访问的数据集 ID
+    "seamew/chnsenticorp_htl_all": "dirtycomputer/ChnSentiCorp_htl_all",
+    "dmsc": "BerlinWang/DMSC",
+}
+
+
+def _resolve_dataset_name(dataset_name: str) -> str:
+    """将用户输入的数据集名解析为可访问的数据集 ID。"""
+    alias = DATASET_ALIASES.get(dataset_name.strip().lower())
+    return alias or dataset_name
+
+
+def _coerce_binary_label(raw_label, dataset_name: str, label_col: str) -> int:
+    """将不同来源标签统一为二分类标签。
+
+    返回：
+    - 0/1：有效二分类标签
+    - -1：无法确定或应过滤的样本
+    """
+    # DMSC 原始是 1-5 星评分，3 星中性，过滤掉。
+    if dataset_name == "BerlinWang/DMSC" and label_col == "Star":
+        try:
+            star = int(raw_label)
+        except (TypeError, ValueError):
+            return -1
+        if star <= 2:
+            return 0
+        if star >= 4:
+            return 1
+        return -1
+
+    if isinstance(raw_label, bool):
+        return int(raw_label)
+
+    if isinstance(raw_label, (int, float)):
+        value = int(raw_label)
+        if value in (0, 1):
+            return value
+        if value == -1:
+            return 0
+        return -1
+
+    text = str(raw_label).strip().lower()
+    if text in {"1", "pos", "positive", "正面", "好评"}:
+        return 1
+    if text in {"0", "-1", "neg", "negative", "负面", "差评"}:
+        return 0
+    return -1
+
+
+def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = False):
+    """统一数据集字段为 text/label，并按需做标签清洗。"""
+    columns = set(split.column_names)
+
+    # 已经是标准字段时，按模式处理标签。
+    if "text" in columns and "label" in columns:
+        def cast_existing(row, ds_name=dataset_name, keep_raw=preserve_label):
+            row_copy = dict(row)
+            row_copy["text"] = str(row.get("text") or "")
+            if keep_raw:
+                try:
+                    row_copy["label"] = int(row.get("label"))
+                except (TypeError, ValueError):
+                    row_copy["label"] = -1
+            else:
+                row_copy["label"] = _coerce_binary_label(row.get("label"), ds_name, "label")
+            return row_copy
+
+        split = split.map(cast_existing)
+    else:
+        text_candidates = ["text", "review", "content", "Comment", "comment", "sentence"]
+        label_candidates = ["label", "sentiment", "Star", "score", "rating"]
+
+        text_col = next((c for c in text_candidates if c in columns), None)
+        label_col = next((c for c in label_candidates if c in columns), None)
+
+        if text_col is None or label_col is None:
+            raise ValueError(
+                f"Dataset {dataset_name} has unsupported schema. "
+                f"Missing text/label columns in {sorted(columns)}"
+            )
+
+        def normalize_row(row, ds_name=dataset_name, t_col=text_col, l_col=label_col, keep_raw=preserve_label):
+            row_copy = dict(row)
+            row_copy["text"] = str(row.get(t_col) or "")
+            if keep_raw:
+                try:
+                    row_copy["label"] = int(row.get(l_col))
+                except (TypeError, ValueError):
+                    row_copy["label"] = -1
+            else:
+                row_copy["label"] = _coerce_binary_label(row.get(l_col), ds_name, l_col)
+            return row_copy
+
+        split = split.map(normalize_row)
+
+    before = len(split)
+    if preserve_label:
+        split = split.filter(lambda row: int(row["label"]) >= 0)
+    else:
+        split = split.filter(lambda row: int(row["label"]) in (0, 1))
+    after = len(split)
+    if after < before:
+        print(f"After schema/label cleanup for {dataset_name}: {after}/{before}")
+    return split
+
+
 def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
     """解析标签映射配置。
 
@@ -86,12 +194,22 @@ def build_train_split_and_val_split():
     train_splits = []
     val_splits = []
     label_map = None  # 标记是否有任何数据集需要映射
+    loaded_dataset_names = []
     # TRAIN_VAL_RATIO 环境变量示例：0.1（表示 10% 的训练数据用于验证）
     val_ratio = float(os.getenv("TRAIN_VAL_RATIO", "0.1"))
     val_ratio = min(max(val_ratio, 0.01), 0.5)
 
-    for name in dataset_names:
-        ds = load_dataset(name)
+    for raw_name in dataset_names:
+        name = _resolve_dataset_name(raw_name)
+        if name != raw_name:
+            print(f"Dataset alias resolved: {raw_name} -> {name}")
+
+        try:
+            ds = load_dataset(name)
+        except Exception as e:
+            print(f"Warning: Failed to load dataset '{raw_name}' (resolved '{name}'): {e}")
+            continue
+
         if "train" not in ds:
             raise ValueError(f"Dataset {name} has no train split.")
 
@@ -119,6 +237,11 @@ def build_train_split_and_val_split():
                 f"auto-split train with TRAIN_VAL_RATIO={val_ratio:.2f}."
             )
 
+        # 新增：字段标准化与标签清洗（统一为 text/label 且 label in {0,1}）。
+        preserve_raw_label = current_label_map is not None
+        train_part = _normalize_split_columns(train_part, name, preserve_label=preserve_raw_label)
+        val_part = _normalize_split_columns(val_part, name, preserve_label=preserve_raw_label)
+
         # 如果需要标签映射，在拼接前应用。
         # 当映射目标为 -1 时，表示丢弃该标签样本（如噪声类）。
         if current_label_map:
@@ -141,6 +264,13 @@ def build_train_split_and_val_split():
 
         train_splits.append(train_part)
         val_splits.append(val_part)
+        loaded_dataset_names.append(name)
+
+    if not train_splits:
+        raise ValueError(
+            "No datasets were successfully loaded after preprocessing. "
+            f"Requested datasets: {dataset_names}"
+        )
 
     train_split = train_splits[0] if len(train_splits) == 1 else concatenate_datasets(train_splits)
     val_split = val_splits[0] if len(val_splits) == 1 else concatenate_datasets(val_splits)
@@ -242,7 +372,7 @@ def build_train_split_and_val_split():
             print("Warning: Synthetic data generation not available (generate_synthetic_data module not found)")
 
     # 返回 None 作为 label_map，因为映射已在拼接前应用
-    return dataset_names, train_split, val_split, None
+    return loaded_dataset_names, train_split, val_split, None
 
 
 def get_label_distribution(split, label_map: dict | None = None) -> Tuple[int, int]:
