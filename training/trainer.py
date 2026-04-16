@@ -40,6 +40,7 @@ def _build_train_loader(train_split, settings, device: torch.device, label_map: 
     }
     if settings.num_workers > 0:
         loader_kwargs["prefetch_factor"] = 1
+        loader_kwargs["persistent_workers"] = True
 
     return DataLoader(dataset, **loader_kwargs)
 

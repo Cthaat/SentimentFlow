@@ -41,6 +41,12 @@ def get_runtime_settings(device_type: str) -> RuntimeSettings:
     batch_size = int(os.getenv("TRAIN_BATCH_SIZE", "256" if device_type == "cuda" else "128"))
     # TRAIN_NUM_WORKERS 默认值：GPU 推荐使用多线程数据加载以提升性能，CPU 则默认单线程以避免过度竞争。
     num_workers = int(os.getenv("TRAIN_NUM_WORKERS", "1" if device_type == "cuda" else "0"))
+    if os.name == "nt" and num_workers > 6:
+        print(
+            f"TRAIN_NUM_WORKERS={num_workers} is high on Windows; "
+            "capping to 6 for stability with jieba tokenization."
+        )
+        num_workers = 6
     # TRAIN_ACCUM_STEPS 默认值为 1，表示不使用梯度累积。你可以根据显存大小和 batch size 调整这个值以实现更大的有效 batch size。
     grad_accum_steps = int(os.getenv("TRAIN_ACCUM_STEPS", "1"))
     # TRAIN_CHUNK_SIZE 默认值根据 batch size 调整，确保每个 chunk 包含足够的数据以充分利用 GPU 的并行计算能力，同时避免过大导致内存压力。你可以根据实际情况调整这个值以获得最佳性能。

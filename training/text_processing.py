@@ -13,8 +13,23 @@ import zlib
 import jieba
 
 
+_JIEBA_READY = False
+
+
+def _ensure_jieba_ready() -> None:
+    """在当前进程内仅初始化一次 jieba，避免重复加载词典。"""
+    global _JIEBA_READY
+    if _JIEBA_READY:
+        return
+    # 多进程 DataLoader 下禁用 jieba 内部并行，避免竞争和额外开销。
+    jieba.disable_parallel()
+    jieba.initialize()
+    _JIEBA_READY = True
+
+
 def tokenize(text: str) -> list[str]:
     """词级切分，使用jieba分词器。"""
+    _ensure_jieba_ready()
     return list(jieba.cut(text.strip()))
 
 
