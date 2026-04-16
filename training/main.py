@@ -19,7 +19,8 @@ from .trainer import train_model
 def run() -> None:
     """执行训练流程并打印样例预测。"""
     env_path = Path(__file__).resolve().parent.parent / ".env"
-    load_env_file(env_path, override=True)
+    # 让外部 shell 传入的环境变量优先，避免覆盖如 FORCE_RETRAIN=0 这类临时参数。
+    load_env_file(env_path, override=False)
 
     # FORCE_RETRAIN 环境变量示例：1（表示强制重新训练模型并覆盖现有 checkpoint）
     force_retrain = os.getenv("FORCE_RETRAIN", "1") == "1"

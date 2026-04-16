@@ -148,7 +148,7 @@ def train_model():
             label_map=label_map,
         )
         avg_loss = (total_loss / max(1, batch_count)).item()
-        print(f"Epoch {epoch + 1}, Loss: {avg_loss:.4f}, ValAcc: {val_acc:.4f}, ValF1: {val_f1:.4f}")
+        print(f"Epoch {epoch + 1}, Loss: {avg_loss:.4f}, ValAcc: {val_acc:.4f}, ValMacroF1: {val_f1:.4f}")
 
         model.train()
 
@@ -164,11 +164,11 @@ def train_model():
                 best_val_f1=best_f1,
                 best_epoch=best_epoch,
             )
-            print(f"Best model updated at epoch {epoch + 1}, ValF1={best_f1:.4f}")
+            print(f"Best model updated at epoch {epoch + 1}, ValMacroF1={best_f1:.4f}")
 
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)
-        print(f"Loaded best in-memory checkpoint from epoch {best_epoch}, ValF1={best_f1:.4f}")
+        print(f"Loaded best in-memory checkpoint from epoch {best_epoch}, ValMacroF1={best_f1:.4f}")
 
     print(f"Training finished. Best model saved to {CHECKPOINT_PATH}")
     return model, device

@@ -21,7 +21,7 @@ def evaluate(
     vocab_size: int,
     label_map: dict | None = None,
 ) -> Tuple[float, float]:
-    """在验证集上计算 Accuracy 和 F1。"""
+    """在验证集上计算 Accuracy 和 Macro-F1。"""
     eval_loader = DataLoader(
         CsvStreamDataset(split, chunk_size=batch_size * 8, max_len=max_len, vocab_size=vocab_size, label_map=None),
         batch_size=batch_size,
@@ -46,7 +46,15 @@ def evaluate(
 
     total = max(1, tp + tn + fp + fn)
     accuracy = (tp + tn) / total
-    precision = tp / max(1, tp + fp)
-    recall = tp / max(1, tp + fn)
-    f1 = 2 * precision * recall / max(1e-12, precision + recall)
-    return accuracy, f1
+    # 正类(1)指标
+    precision_pos = tp / max(1, tp + fp)
+    recall_pos = tp / max(1, tp + fn)
+    f1_pos = 2 * precision_pos * recall_pos / max(1e-12, precision_pos + recall_pos)
+
+    # 负类(0)指标（把 0 当作“正类”再算一遍）
+    precision_neg = tn / max(1, tn + fn)
+    recall_neg = tn / max(1, tn + fp)
+    f1_neg = 2 * precision_neg * recall_neg / max(1e-12, precision_neg + recall_neg)
+
+    macro_f1 = 0.5 * (f1_pos + f1_neg)
+    return accuracy, macro_f1
