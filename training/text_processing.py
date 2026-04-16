@@ -1,19 +1,21 @@
 """文本预处理模块。
 
-这里采用"字符级 + 哈希映射"策略：
-- 无需预先构建完整词表
-- 对短文本情感分类足够实用
-- 训练启动快、内存占用低
+这里采用"词级 + 哈希映射"策略：
+- 使用 jieba 中文分词器
+- 对短文本情感分类精度更高
+- 能够捕捉词语语义关系
 """
 
 from __future__ import annotations
 
 import zlib
 
+import jieba
+
 
 def tokenize(text: str) -> list[str]:
-    """字符级切分，避免额外分词器依赖。"""
-    return list(str(text).strip())
+    """词级切分，使用jieba分词器。"""
+    return list(jieba.cut(text.strip()))
 
 
 def encode_text(text: str, max_len: int, vocab_size: int) -> list[int]:

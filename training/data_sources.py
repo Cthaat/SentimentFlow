@@ -143,9 +143,74 @@ def build_train_split_and_val_split():
         max_val_samples = min(max_val_samples, len(val_split))
         val_split = val_split.select(range(max_val_samples))
 
-    # 可选：添加合成短句数据来补充分布差异
+    # 可选：添加提取的真实短句数据来补充分布差异
+    # USE_EXTRACTED_SHORT_SENTENCES 环境变量：1 表示启用（默认），0 表示禁用
+    if os.getenv("USE_EXTRACTED_SHORT_SENTENCES", "1") == "1":
+        try:
+            from pathlib import Path
+            csv_path = Path(__file__).resolve().parent.parent / "extracted_short_sentences.csv"
+            
+            if csv_path.exists():
+                print(f"Loading extracted short sentences from {csv_path}...")
+                
+                # 直接读取CSV，避免pandas转换引起的类型问题
+                short_texts = []
+                short_labels = []
+                
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    # 跳过header (text,label)
+                    next(f)
+                    for line in f:
+                        line = line.rstrip('\n')
+                        if not line:
+                            continue
+                        # 格式：text,label，找最后一个逗号来分割
+                        last_comma = line.rfind(',')
+                        if last_comma > 0:
+                            text = line[:last_comma]
+                            label_str = line[last_comma+1:]
+                            try:
+                                label = int(label_str)
+                                if label in (0, 1):
+                                    short_texts.append(text)
+                                    short_labels.append(label)
+                            except ValueError:
+                                continue
+                
+                if short_texts:
+                    from datasets import Dataset
+                    short_sentences_ds = Dataset.from_dict({
+                        'text': short_texts,
+                        'label': short_labels
+                    })
+                    
+                    # 可选限制数量
+                    max_short_samples = int(os.getenv("EXTRACTED_SHORT_SENTENCES_MAX", "0"))
+                    if max_short_samples > 0 and len(short_sentences_ds) > max_short_samples:
+                        short_sentences_ds = short_sentences_ds.select(range(max_short_samples))
+                    
+                    # 混合：长句 + 短句
+                    short_ratio = float(os.getenv("SHORT_SENTENCES_RATIO", "0.3"))  # 默认30%短句
+                    short_samples_to_use = int(len(train_split) * short_ratio / (1 - short_ratio))
+                    short_samples_to_use = min(short_samples_to_use, len(short_sentences_ds))
+                    
+                    if short_samples_to_use > 0:
+                        short_sentences_ds = short_sentences_ds.select(range(short_samples_to_use))
+                        train_split = concatenate_datasets([train_split, short_sentences_ds])
+                        neg_short = sum(1 for l in short_labels[:short_samples_to_use] if l == 0)
+                        pos_short = sum(1 for l in short_labels[:short_samples_to_use] if l == 1)
+                        print(f"✓ Added {len(short_sentences_ds)} extracted short sentences (neg={neg_short}, pos={pos_short}).")
+                        print(f"  New train size: {len(train_split)} (long:short = {100*(1-short_ratio):.0f}%:{100*short_ratio:.0f}%)")
+                else:
+                    print("Warning: No valid short sentences found in CSV")
+            else:
+                print(f"Note: extracted_short_sentences.csv not found at {csv_path}")
+        except Exception as e:
+            print(f"Warning: Failed to load short sentences: {e}")
+
+    # 可选：添加合成短句数据来补充分布差异（不推荐，已证明无效）
     # USE_SYNTHETIC_DATA 环境变量：1 表示启用，0 表示禁用
-    if os.getenv("USE_SYNTHETIC_DATA", "1") == "1":
+    if os.getenv("USE_SYNTHETIC_DATA", "0") == "1":
         try:
             from .generate_synthetic_data import generate_short_sentence_dataset
             
