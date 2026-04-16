@@ -22,6 +22,13 @@ def run() -> None:
     # 让外部 shell 传入的环境变量优先，避免覆盖如 FORCE_RETRAIN=0 这类临时参数。
     load_env_file(env_path, override=False)
 
+    raw_datasets = os.getenv(
+        "TRAIN_DATASETS",
+        "lansinuote/ChnSentiCorp,XiangPan/waimai_10k",
+    )
+    active_datasets = [item.strip() for item in raw_datasets.split(",") if item.strip()]
+    print(f"Active TRAIN_DATASETS ({len(active_datasets)}): {', '.join(active_datasets)}")
+
     # FORCE_RETRAIN 环境变量示例：1（表示强制重新训练模型并覆盖现有 checkpoint）
     force_retrain = os.getenv("FORCE_RETRAIN", "1") == "1"
     # FORCE_RETRAIN 的默认值为 "1"（启用），表示默认情况下会强制重新训练模型并覆盖现有 checkpoint。这是为了确保在你第一次运行脚本时能够训练出一个新的模型。如果你希望在后续运行中使用已经训练好的模型，可以将 FORCE_RETRAIN 设置为 "0" 来跳过训练阶段，直接加载现有 checkpoint 进行推理。
