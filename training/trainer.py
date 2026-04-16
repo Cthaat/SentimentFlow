@@ -90,7 +90,9 @@ def train_model():
     )
     print(
         f"Training config: batch_size={settings.batch_size}, "
-        f"grad_accum_steps={settings.grad_accum_steps}, num_workers={settings.num_workers}"
+        f"grad_accum_steps={settings.grad_accum_steps}, num_workers={settings.num_workers}, "
+        f"early_stop_patience={settings.early_stop_patience}, "
+        f"early_stop_min_delta={settings.early_stop_min_delta}"
     )
 
     loader = _build_train_loader(train_split, settings, device, label_map)
@@ -103,6 +105,7 @@ def train_model():
     best_f1 = -1.0
     best_epoch = -1
     best_state_dict = None
+    no_improve_epochs = 0
 
     model.train()
     for epoch in range(EPOCHS):
@@ -157,10 +160,11 @@ def train_model():
 
         model.train()
 
-        if val_f1 >= best_f1:
+        if val_f1 > best_f1 + settings.early_stop_min_delta:
             best_f1 = val_f1
             best_epoch = epoch + 1
             best_state_dict = deepcopy(model.state_dict())
+            no_improve_epochs = 0
             save_checkpoint(
                 checkpoint_path=CHECKPOINT_PATH,
                 model=model,
@@ -170,6 +174,19 @@ def train_model():
                 best_epoch=best_epoch,
             )
             print(f"Best model updated at epoch {epoch + 1}, ValMacroF1={best_f1:.4f}")
+        else:
+            no_improve_epochs += 1
+            print(
+                f"No significant improvement for {no_improve_epochs} epoch(s) "
+                f"(best={best_f1:.4f}, current={val_f1:.4f}, "
+                f"min_delta={settings.early_stop_min_delta})."
+            )
+            if settings.early_stop_patience > 0 and no_improve_epochs >= settings.early_stop_patience:
+                print(
+                    f"Early stopping triggered at epoch {epoch + 1}. "
+                    f"No improvement for {no_improve_epochs} consecutive epoch(s)."
+                )
+                break
 
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)

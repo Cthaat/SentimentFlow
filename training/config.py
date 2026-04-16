@@ -31,6 +31,8 @@ class RuntimeSettings:
     chunk_size: int
     learning_rate: float
     use_weighted_loss: bool
+    early_stop_patience: int
+    early_stop_min_delta: float
 
 
 def get_runtime_settings(device_type: str) -> RuntimeSettings:
@@ -47,6 +49,10 @@ def get_runtime_settings(device_type: str) -> RuntimeSettings:
     learning_rate = float(os.getenv("TRAIN_LR", "0.0005"))
     # TRAIN_WEIGHTED_LOSS 默认值为 "1"（启用），表示在训练过程中使用加权损失函数以处理类别不平衡问题。你可以根据数据集的标签分布情况调整这个值，如果你的数据集类别非常不平衡，启用加权损失可能会有助于提升模型的性能。
     use_weighted_loss = os.getenv("TRAIN_WEIGHTED_LOSS", "1") == "1"
+    # EARLY_STOP_PATIENCE 默认值为 2，表示验证指标连续 2 个 epoch 无提升时提前停止。
+    early_stop_patience = max(0, int(os.getenv("EARLY_STOP_PATIENCE", "2")))
+    # EARLY_STOP_MIN_DELTA 默认值为 0.0005，表示至少提升该幅度才视为“有效提升”。
+    early_stop_min_delta = max(0.0, float(os.getenv("EARLY_STOP_MIN_DELTA", "0.0005")))
 
     return RuntimeSettings(
         batch_size=batch_size,
@@ -55,4 +61,6 @@ def get_runtime_settings(device_type: str) -> RuntimeSettings:
         chunk_size=chunk_size,
         learning_rate=learning_rate,
         use_weighted_loss=use_weighted_loss,
+        early_stop_patience=early_stop_patience,
+        early_stop_min_delta=early_stop_min_delta,
     )
