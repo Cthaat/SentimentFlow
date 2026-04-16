@@ -16,7 +16,7 @@ def predict(req: PredictRequest) -> PredictResponse:
     - 出参使用 PredictResponse，保证返回结构稳定。
     """
     # 1) 从请求中取出文本并调用服务层完成预测。
-    result = predict_text(req.text)
+    result = predict_text(req.text, model_type=req.model)
 
     # 2) 将服务层结果映射为响应模型，避免接口字段漂移。
     return PredictResponse(

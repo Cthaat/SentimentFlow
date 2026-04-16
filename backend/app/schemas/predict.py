@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,8 @@ class PredictRequest(BaseModel):
 	"""
 	# 待分析文本：最短 1 字符，最长 2000 字符。
 	text: str = Field(..., min_length=1, max_length=2000, description="Input text")
+	# 可选：指定模型类型，未传则使用 backend/.env 的 PREDICT_MODEL_TYPE。
+	model: Literal["lstm", "bert"] | None = Field(default=None, description="Model type override")
 
 
 class PredictResponse(BaseModel):
