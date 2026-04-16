@@ -42,11 +42,14 @@ def get_label_map(dataset_name: str) -> Dict[int, int] | None:
     返回 None 表示无需映射（已是二分类）。
     """
     if dataset_name == "ttxy/online_shopping_10_cats":
-        # 10类评分转二分类：1-5级(较差/负面) -> 0, 6-10级(较好/正面) -> 1
-        return {
-            1: 0, 2: 0, 3: 0, 4: 0, 5: 0,  # 负面（36,174 个样本）
-            6: 1, 7: 1, 8: 1, 9: 1, 10: 1  # 正面（26,599 个样本）
-        }
+        # 10类评分转二分类。
+        # 为了减少边界噪声，默认丢弃 5/6 分样本，仅保留更明确的两端样本。
+        # 可通过环境变量覆盖，例如：TTXY_ONLINE_SHOPPING_10_CATS_LABEL_MAP=1:0,2:0,3:0,4:0,5:-1,6:-1,7:1,8:1,9:1,10:1
+        raw_map = os.getenv(
+            "TTXY_ONLINE_SHOPPING_10_CATS_LABEL_MAP",
+            "1:0,2:0,3:0,4:0,5:-1,6:-1,7:1,8:1,9:1,10:1",
+        )
+        return _parse_label_map_from_env(raw_map)
     if dataset_name == "dirtycomputer/simplifyweibo_4_moods":
         # 4类情绪转二分类。默认规则：保留 0/1，丢弃 2/3（噪声类）。
         # 可通过环境变量覆盖，例如：SIMPLIFYWEIBO_4_MOODS_LABEL_MAP=0:1,1:0,2:-1,3:-1

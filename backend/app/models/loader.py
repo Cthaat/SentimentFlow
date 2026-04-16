@@ -76,9 +76,9 @@ def load_model(
     vocab_size: int,
     num_classes: int = 2,
     embed_dim: int = 128,
-    hidden_dim: int = 128,
-    num_layers: int = 1,
-    dropout: float = 0.3,
+    hidden_dim: int = 256,
+    num_layers: int = 2,
+    dropout: float = 0.5,
     pad_idx: int = 0,
 ) -> SentimentLSTM:
     """加载并缓存情感模型。

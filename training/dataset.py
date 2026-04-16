@@ -128,6 +128,9 @@ class CsvStreamDataset(IterableDataset):
                         mapped_label = self.label_map[label]
                     else:
                         mapped_label = label
+
+                    if mapped_label == -1:
+                        continue
                     
                     # 验证映射后的标签在有效范围内（二分类：0 或 1）
                     if mapped_label < 0 or mapped_label > 1:
@@ -159,6 +162,9 @@ class CsvStreamDataset(IterableDataset):
                     mapped_label = self.label_map[label]
                 else:
                     mapped_label = label
+
+                if mapped_label == -1:
+                    continue
                 
                 # 验证映射后的标签在有效范围内（二分类：0 或 1）
                 if mapped_label < 0 or mapped_label > 1:

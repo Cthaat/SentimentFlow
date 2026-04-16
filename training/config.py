@@ -12,10 +12,10 @@ from dataclasses import dataclass
 
 # 固定超参数（除非你明确希望改算法结构，一般不需要频繁改动）。
 MAX_LEN = 100
-EPOCHS = 10
+EPOCHS = 25
 VOCAB_SIZE = 65536
 DEFAULT_CHUNK_SIZE = 4096
-CHECKPOINT_PATH = "sentiment_model.pt"
+CHECKPOINT_PATH = "backend/app/models/sentiment_model.pt"
 
 
 @dataclass(frozen=True)

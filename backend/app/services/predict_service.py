@@ -82,7 +82,7 @@ def predict_text(text: str) -> PredictResult:
 
 	当前默认走 LSTM 推理分支。
 	"""
-	model_path = os.getenv("MODEL_PATH", "sentiment_model.pt")
+	model_path = os.getenv("MODEL_PATH", "./app/models/sentiment_model.pt")
 	vocab_size = int(os.getenv("MODEL_VOCAB_SIZE", "65536"))
 	max_len = int(os.getenv("MODEL_MAX_LEN", "100"))
 	# 与根目录旧训练脚本默认结构保持一致。
