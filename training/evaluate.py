@@ -23,7 +23,7 @@ def evaluate(
 ) -> Tuple[float, float]:
     """在验证集上计算 Accuracy 和 F1。"""
     eval_loader = DataLoader(
-        CsvStreamDataset(split, chunk_size=batch_size * 8, max_len=max_len, vocab_size=vocab_size, label_map=label_map),
+        CsvStreamDataset(split, chunk_size=batch_size * 8, max_len=max_len, vocab_size=vocab_size, label_map=None),
         batch_size=batch_size,
         num_workers=0,
         pin_memory=device.type == "cuda",

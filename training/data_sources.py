@@ -6,6 +6,30 @@ import os
 from typing import Tuple, Dict
 
 
+def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
+    """解析形如 "0:1,1:0,2:0,3:0" 的标签映射配置。"""
+    mapping: Dict[int, int] = {}
+    for item in raw.split(","):
+        pair = item.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ValueError(
+                f"Invalid label map item '{pair}'. Expected format like '0:1'."
+            )
+        src, dst = pair.split(":", 1)
+        src_label = int(src.strip())
+        dst_label = int(dst.strip())
+        if dst_label not in (0, 1):
+            raise ValueError(
+                f"Invalid target label {dst_label} in '{pair}'. Expected 0 or 1."
+            )
+        mapping[src_label] = dst_label
+    if not mapping:
+        raise ValueError("Parsed empty label map from environment variable.")
+    return mapping
+
+
 def get_label_map(dataset_name: str) -> Dict[int, int] | None:
     """获取数据集的标签映射规则。
     
@@ -15,9 +39,14 @@ def get_label_map(dataset_name: str) -> Dict[int, int] | None:
     if dataset_name == "ttxy/online_shopping_10_cats":
         # 10类评分转二分类：1-5级(较差/负面) -> 0, 6-10级(较好/正面) -> 1
         return {
-            1: 0, 2: 0, 3: 0, 4: 0, 5: 0,  # 负面
-            6: 1, 7: 1, 8: 1, 9: 1, 10: 1  # 正面
+            1: 0, 2: 0, 3: 0, 4: 0, 5: 0,  # 负面（36,174 个样本）
+            6: 1, 7: 1, 8: 1, 9: 1, 10: 1  # 正面（26,599 个样本）
         }
+    if dataset_name == "dirtycomputer/simplifyweibo_4_moods":
+        # 4类情绪转二分类。默认规则：0=正面，1/2/3=负面。
+        # 可通过环境变量覆盖，例如：SIMPLIFYWEIBO_4_MOODS_LABEL_MAP=0:1,1:0,2:0,3:0
+        raw_map = os.getenv("SIMPLIFYWEIBO_4_MOODS_LABEL_MAP", "0:1,1:0,2:0,3:0")
+        return _parse_label_map_from_env(raw_map)
     return None  # 其他数据集无需映射
 
 
@@ -31,22 +60,24 @@ def build_train_split_and_val_split():
     - 优先读取 validation split
     - 没有 validation 时退化到 test split
     - 两者都没有时，从 train 自动切分验证集
+    - 如果数据集需要标签映射，在拼接前应用映射
     """
     from datasets import concatenate_datasets, load_dataset
 
     dataset_names = [
         item.strip()
-        # TRAIN_DATASETS 环境变量示例：lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/weibo_senti_100k,ttxy/online_shopping_10_cats
+        # TRAIN_DATASETS 环境变量示例：lansinuote/ChnSentiCorp,XiangPan/waimai_10k
+        # 改为仅使用两个高质量数据集，避免多数据集混合导致的类别不平衡
         for item in os.getenv(
             "TRAIN_DATASETS",
-            "lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/weibo_senti_100k,ttxy/online_shopping_10_cats"
+            "lansinuote/ChnSentiCorp,XiangPan/waimai_10k"
         ).split(",")
         if item.strip()
     ]
 
     train_splits = []
     val_splits = []
-    label_map = None  # 使用第一个需要映射的数据集的映射规则
+    label_map = None  # 标记是否有任何数据集需要映射
     # TRAIN_VAL_RATIO 环境变量示例：0.1（表示 10% 的训练数据用于验证）
     val_ratio = float(os.getenv("TRAIN_VAL_RATIO", "0.1"))
     val_ratio = min(max(val_ratio, 0.01), 0.5)
@@ -58,9 +89,10 @@ def build_train_split_and_val_split():
 
         # 检查是否需要标签映射
         current_label_map = get_label_map(name)
-        if current_label_map and label_map is None:
-            label_map = current_label_map
+        if current_label_map:
+            label_map = current_label_map  # 记录映射规则
             print(f"Using label mapping for dataset: {name}")
+            print(f"Label map: {current_label_map}")
 
         train_part = ds["train"]
         if "validation" in ds:
@@ -78,6 +110,17 @@ def build_train_split_and_val_split():
                 f"Dataset {name} has no validation/test split; "
                 f"auto-split train with TRAIN_VAL_RATIO={val_ratio:.2f}."
             )
+
+        # 如果需要标签映射，在拼接前应用
+        # 注意：使用默认参数避免 lambda 的延迟绑定问题
+        if current_label_map:
+            def apply_mapping(row, mapping=current_label_map):
+                row_copy = dict(row)
+                row_copy["label"] = mapping.get(row["label"], row["label"])
+                return row_copy
+            
+            train_part = train_part.map(apply_mapping)
+            val_part = val_part.map(apply_mapping)
 
         train_splits.append(train_part)
         val_splits.append(val_part)
@@ -100,22 +143,33 @@ def build_train_split_and_val_split():
         max_val_samples = min(max_val_samples, len(val_split))
         val_split = val_split.select(range(max_val_samples))
 
-    return dataset_names, train_split, val_split, label_map
+    # 可选：添加合成短句数据来补充分布差异
+    # USE_SYNTHETIC_DATA 环境变量：1 表示启用，0 表示禁用
+    if os.getenv("USE_SYNTHETIC_DATA", "1") == "1":
+        try:
+            from .generate_synthetic_data import generate_short_sentence_dataset
+            
+            synthetic_size = int(os.getenv("SYNTHETIC_DATA_SIZE", "5000"))
+            print(f"Generating {synthetic_size} synthetic short sentences...")
+            synthetic_ds = generate_short_sentence_dataset(size=synthetic_size)
+            
+            # 将合成数据追加到训练集
+            train_split = concatenate_datasets([train_split, synthetic_ds])
+            print(f"✓ Added {len(synthetic_ds)} synthetic samples. New train size: {len(train_split)}")
+        except ImportError:
+            print("Warning: Synthetic data generation not available (generate_synthetic_data module not found)")
+
+    # 返回 None 作为 label_map，因为映射已在拼接前应用
+    return dataset_names, train_split, val_split, None
 
 
 def get_label_distribution(split, label_map: dict | None = None) -> Tuple[int, int]:
     """统计二分类标签分布。
     
-    如果提供 label_map，会在计数前应用映射（仅对 label_map 中的标签）。
+    注意：如果标签映射在 build_train_split_and_val_split() 中应用过，label_map 参数会是 None。
+    此函数仅统计最终的二分类标签（0 和 1）。
     """
     labels = split["label"]
-    if label_map:
-        # 应用标签映射，只映射在 label_map 中的标签
-        mapped_labels = [label_map.get(int(x), int(x)) for x in labels]
-        neg = sum(1 for x in mapped_labels if x == 0)
-        pos = sum(1 for x in mapped_labels if x == 1)
-    else:
-        # 直接计数原始标签
-        neg = sum(1 for x in labels if int(x) == 0)
-        pos = sum(1 for x in labels if int(x) == 1)
+    neg = sum(1 for x in labels if int(x) == 0)
+    pos = sum(1 for x in labels if int(x) == 1)
     return neg, pos

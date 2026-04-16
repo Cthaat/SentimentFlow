@@ -32,6 +32,9 @@ def run() -> None:
     else:
         model, device = load_or_train()
 
+    print("\n" + "="*80)
+    print("DEFAULT SAMPLE PREDICTIONS:")
+    print("="*80)
     for text in DEFAULT_SAMPLES:
         result = predict_text(text, model, device, max_len=MAX_LEN, vocab_size=VOCAB_SIZE)
         print(
@@ -39,7 +42,37 @@ def run() -> None:
             f"(neg={result['negative_score']:.6f}, pos={result['positive_score']:.6f}, "
             f"conf={result['confidence']:.6f})"
         )
+    
+    # 新增：自定义测试集验证
+    print("\n" + "="*80)
+    print("CUSTOM TEST CASES (Quality Verification):")
+    print("="*80)
+    try:
+        from custom_test_cases import CUSTOM_TEST_CASES
+        correct = 0
+        total = len(CUSTOM_TEST_CASES)
+        
+        for text, expected_label in CUSTOM_TEST_CASES:
+            result = predict_text(text, model, device, max_len=MAX_LEN, vocab_size=VOCAB_SIZE)
+            predicted_label = 1 if result['label'] == '正面' else 0
+            is_correct = predicted_label == expected_label
+            correct += is_correct
+            
+            status = "✓" if is_correct else "✗"
+            expected_text = '正面' if expected_label == 1 else '负面'
+            print(
+                f"{status} '{text}' -> {result['label']} (expected: {expected_text}, "
+                f"conf={result['confidence']:.2%})"
+            )
+        
+        accuracy = 100 * correct / total
+        print(f"\n{'='*80}")
+        print(f"Custom Test Accuracy: {correct}/{total} = {accuracy:.1f}%")
+        print(f"{'='*80}\n")
+    except ImportError:
+        print("Custom test cases not found, skipping validation.")
 
 
 if __name__ == "__main__":
     run()
+

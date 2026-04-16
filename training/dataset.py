@@ -148,7 +148,9 @@ class CsvStreamDataset(IterableDataset):
             total = len(self.source)
             for idx in range(worker_id, total, num_workers):
                 row = self.source[idx]
-                text = str(row.get("text", ""))
+                # 某些拼接后的样本会保留字段名但值为 None，必须使用“值回退”而不是仅 key 回退。
+                raw_text = row.get("text") or row.get("review") or row.get("content") or ""
+                text = str(raw_text)
                 label = int(row.get("label", 0))
                 
                 # 应用标签映射（如果存在）
