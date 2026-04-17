@@ -139,6 +139,7 @@ def train_model():
     model = SentimentLSTMModel(VOCAB_SIZE).to(device)
     loss_fn = _build_loss_fn(neg_count, pos_count, total_count, settings, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.learning_rate)
+    # 使用 PyTorch 的自动混合精度（AMP）功能来加速训练，特别是在 GPU 上。GradScaler 用于动态调整梯度缩放以避免数值不稳定。
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     best_f1 = -1.0
@@ -146,6 +147,7 @@ def train_model():
     best_state_dict = None
     no_improve_epochs = 0
 
+    # 训练循环：每个 epoch 迭代训练数据，计算损失，进行反向传播和优化器更新。每个 epoch 结束后在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
     model.train()
     for epoch in range(EPOCHS):
         total_loss = torch.zeros((), device=device)
@@ -155,18 +157,22 @@ def train_model():
 
         for step, (batch_x, batch_y) in enumerate(loader, start=1):
             batch_count += 1
+            # 将输入数据移动到设备（GPU 或 CPU），并启用 AMP 上下文以使用混合精度计算。计算模型输出和损失，并根据 grad_accum_steps 进行梯度累积和优化器更新。
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+                # 前向传播：输入数据经过模型得到输出 logits，计算损失函数值。损失值除以 grad_accum_steps 以实现梯度累积。
                 output = model(batch_x)
                 loss = loss_fn(output, batch_y) / settings.grad_accum_steps
 
+            # 反向传播和优化器更新
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
 
+            # 梯度累积和优化器更新：每当 step 达到 grad_accum_steps 的倍数时，执行优化器更新并清零梯度。这样可以在显存有限的情况下实现更大的有效 batch size。
             if step % settings.grad_accum_steps == 0:
                 if scaler.is_enabled():
                     scaler.step(optimizer)
@@ -175,6 +181,7 @@ def train_model():
                     optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
+            # 累积损失以计算平均损失值，便于在日志中输出。每个 epoch 结束后，在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
             total_loss += loss.detach()
 
         if batch_count > 0 and step % settings.grad_accum_steps != 0:
@@ -185,6 +192,7 @@ def train_model():
                 optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
+        # 在验证集上评估模型性能，计算 Accuracy 和 Macro-F1 指标。根据 Macro-F1 指标判断是否更新最优模型，并实现早停逻辑以避免过拟合。
         val_acc, val_f1 = evaluate(
             model,
             val_split,
@@ -199,6 +207,7 @@ def train_model():
 
         model.train()
 
+        # 根据验证 Macro-F1 指标判断是否更新最优模型，并实现早停逻辑以避免过拟合。如果当前 epoch 的 Macro-F1 指标比之前的最佳值提升超过 early_stop_min_delta，则更新最佳模型并重置无提升计数器；否则增加无提升计数器，并在达到 early_stop_patience 时触发早停。
         if val_f1 > best_f1 + settings.early_stop_min_delta:
             best_f1 = val_f1
             best_epoch = epoch + 1
@@ -226,7 +235,8 @@ def train_model():
                     f"No improvement for {no_improve_epochs} consecutive epoch(s)."
                 )
                 break
-
+    
+    # 训练结束后，如果内存中保存了最优模型的状态字典，则加载该状态字典到模型中，并输出加载信息。最后打印训练完成信息和最优模型保存路径，并返回最优模型和设备。
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)
         print(f"Loaded best in-memory checkpoint from epoch {best_epoch}, ValMacroF1={best_f1:.4f}")
