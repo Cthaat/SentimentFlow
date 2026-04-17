@@ -54,5 +54,5 @@ next-env.d.ts
 .next
 
 # BERT model files
-bert_sentiment_model/
-lstm_sentiment_model/
+bert_sentiment_model*/
+lstm_sentiment_model*/
