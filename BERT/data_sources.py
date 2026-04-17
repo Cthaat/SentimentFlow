@@ -305,7 +305,7 @@ def build_train_split_and_val_split():
         try:
             from pathlib import Path
 
-            csv_path = Path(__file__).resolve().parent.parent / "extracted_short_sentences.csv"
+            csv_path = Path(__file__).resolve().parent / "extracted_short_sentences.csv"
 
             if csv_path.exists():
                 print(f"Loading extracted short sentences from {csv_path}...")

@@ -10,7 +10,10 @@
 
 from __future__ import annotations
 
+import csv
+import os
 from copy import deepcopy
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -24,9 +27,44 @@ from .evaluate import evaluate
 from .model import SentimentLSTMModel
 
 
+def _materialize_train_split_for_multiprocess(train_split, settings) -> str | Path | object:
+    """在 Windows 多进程场景下，把内存数据集落盘为 CSV 以避免 spawn pickle 失败。"""
+    if os.name != "nt" or settings.num_workers <= 0:
+        return train_split
+
+    if isinstance(train_split, (str, Path)):
+        return train_split
+
+    cache_dir = Path(os.getenv("TRAIN_CACHE_DIR", str(Path(__file__).resolve().parent.parent / ".cache")))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    fingerprint = getattr(train_split, "_fingerprint", None) or f"len{len(train_split)}"
+    safe_fingerprint = str(fingerprint).replace("/", "_").replace("\\", "_")
+    cache_path = cache_dir / f"train_stream_{safe_fingerprint}_{len(train_split)}.csv"
+
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        print(f"Reusing materialized training CSV for multi-worker loading: {cache_path}")
+        return cache_path
+
+    print(
+        "Materializing in-memory train split to CSV for Windows multi-worker DataLoader: "
+        f"{cache_path}"
+    )
+    with cache_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["text", "label"])
+        for row in train_split:
+            text = row.get("text") or row.get("review") or row.get("content") or ""
+            label = int(row.get("label", 0))
+            writer.writerow([str(text), label])
+
+    return cache_path
+
+
 def _build_train_loader(train_split, settings, device: torch.device, label_map: dict | None = None):
+    train_source = _materialize_train_split_for_multiprocess(train_split, settings)
     dataset = CsvStreamDataset(
-        train_split,
+        train_source,
         chunk_size=settings.chunk_size,
         max_len=MAX_LEN,
         vocab_size=VOCAB_SIZE,
