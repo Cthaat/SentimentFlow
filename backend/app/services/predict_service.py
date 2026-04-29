@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from app.core.config import ensure_backend_env_loaded, get_predict_model_type
+from app.core.config import ensure_backend_env_loaded, get_active_model_config, get_predict_model_type
 from app.models.BERT import predict_text as predict_text_with_bert_model
 from app.models.LSTM import load_model as load_lstm_model
 from app.models.LSTM import predict_batch as predict_batch_with_lstm_model

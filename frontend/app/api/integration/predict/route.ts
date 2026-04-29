@@ -5,20 +5,23 @@ const fallbackBases = ["http://backend:8000", "http://localhost:8000"];
 
 type PredictRequestBody = {
 	text?: string;
+	model?: string;
 };
 
-async function requestPredict(text: string) {
+async function requestPredict(text: string, model?: string) {
 	const baseCandidates = configuredBase ? [configuredBase] : fallbackBases;
 	let lastError: unknown = null;
 
 	for (const base of baseCandidates) {
 		try {
+			const body: Record<string, string> = { text };
+			if (model) body.model = model;
 			const response = await fetch(`${base}/api/predict/`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ text }),
+				body: JSON.stringify(body),
 				cache: "no-store",
 			});
 			const data = await response.json();
@@ -46,7 +49,7 @@ export async function POST(request: Request) {
 	}
 
 	try {
-		const { base, response, data } = await requestPredict(text);
+		const { base, response, data } = await requestPredict(text, body.model);
 		return NextResponse.json(
 			{
 				ok: response.ok,

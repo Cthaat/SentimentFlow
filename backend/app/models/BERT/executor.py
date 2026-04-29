@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 _model = None
 _device = None
+_loaded_ckpt_path: str | None = None
 
 
 def _ensure_project_root_in_sys_path() -> None:
@@ -20,14 +21,17 @@ def _ensure_project_root_in_sys_path() -> None:
 
 def load_model(force_reload: bool = False):
     """加载或训练 BERT 模型（遵循 BERT_FORCE_RETRAIN 逻辑）。"""
-    global _model, _device
-    if _model is not None and not force_reload:
+    global _model, _device, _loaded_ckpt_path
+
+    current_path = os.getenv("BERT_CHECKPOINT_PATH", "")
+    if not force_reload and _model is not None and _loaded_ckpt_path == current_path:
         return _model, _device
 
     _ensure_project_root_in_sys_path()
     from BERT.pipeline import load_or_train
 
     _model, _device = load_or_train()
+    _loaded_ckpt_path = current_path
     return _model, _device
 
 

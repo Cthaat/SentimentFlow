@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 type ApiResult = {
@@ -19,6 +20,7 @@ const defaultText = "这个产品非常好用，体验超出预期。";
 
 export function IntegrationTestPanel() {
 	const [text, setText] = useState(defaultText);
+	const [modelType, setModelType] = useState("");
 	const [healthLoading, setHealthLoading] = useState(false);
 	const [predictLoading, setPredictLoading] = useState(false);
 	const [healthResult, setHealthResult] = useState<ApiResult | null>(null);
@@ -48,12 +50,14 @@ export function IntegrationTestPanel() {
 	const runPredict = async () => {
 		setPredictLoading(true);
 		try {
+			const body: Record<string, string> = { text };
+			if (modelType) body.model = modelType;
 			const response = await fetch("/api/integration/predict", {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ text }),
+				body: JSON.stringify(body),
 			});
 			const data = (await response.json()) as ApiResult;
 			setPredictResult(data);
@@ -70,8 +74,8 @@ export function IntegrationTestPanel() {
 	return (
 		<Card className="w-full max-w-3xl">
 			<CardHeader>
-				<CardTitle>前后端联调测试面板</CardTitle>
-				<CardDescription>使用 shadcn 组件构建。先做健康检查，再发起情感预测请求。</CardDescription>
+				<CardTitle>情感预测</CardTitle>
+				<CardDescription>输入文本，选择模型，获取情感分析结果</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
 				<div className="flex items-center gap-2">
@@ -85,6 +89,20 @@ export function IntegrationTestPanel() {
 					>
 						{healthLoading ? "检测中..." : "健康检查"}
 					</Button>
+				</div>
+
+				<div className="flex items-center gap-2">
+					<span className="text-sm text-muted-foreground">模型选择</span>
+					<Select
+						options={[
+							{ value: "", label: "自动 (默认)" },
+							{ value: "lstm", label: "LSTM" },
+							{ value: "bert", label: "BERT" },
+						]}
+						value={modelType}
+						onChange={(e) => setModelType(e.target.value)}
+						className="w-44"
+					/>
 				</div>
 
 				<div className="space-y-2">

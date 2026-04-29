@@ -51,3 +51,33 @@ def get_predict_model_type(default: str = "lstm") -> str:
 	model_type = os.getenv("PREDICT_MODEL_TYPE", default).strip().lower()
 	return model_type if model_type in {"lstm", "bert"} else default
 
+
+# 运行时模型配置（可在不重启的情况下通过 API 切换）
+_active_config: dict[str, str] = {}
+
+
+def get_active_model_config() -> dict[str, str | None]:
+    """获取当前活跃模型配置。"""
+    ensure_backend_env_loaded()
+    return {
+        "lstm_path": _active_config.get("lstm_path") or os.getenv("MODEL_PATH"),
+        "bert_path": _active_config.get("bert_path") or os.getenv("BERT_CHECKPOINT_PATH"),
+        "predict_model_type": _active_config.get("predict_model_type") or get_predict_model_type(),
+    }
+
+
+def set_active_model(model_type: str, model_path: str) -> None:
+    """设置活跃模型路径。"""
+    ensure_backend_env_loaded()
+    if model_type == "lstm":
+        _active_config["lstm_path"] = model_path
+        os.environ["MODEL_PATH"] = model_path
+    elif model_type == "bert":
+        _active_config["bert_path"] = model_path
+        os.environ["BERT_CHECKPOINT_PATH"] = model_path
+
+    # 自动切换预测模型类型
+    if _active_config.get("predict_model_type") != model_type:
+        _active_config["predict_model_type"] = model_type
+        os.environ["PREDICT_MODEL_TYPE"] = model_type
+
