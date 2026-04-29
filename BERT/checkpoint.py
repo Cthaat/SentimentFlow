@@ -6,6 +6,15 @@ import json
 import os
 from pathlib import Path
 
+# 抑制 HF Hub 后台线程请求和 safetensors 自动转换
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
 import torch
 
 from .config import BERT_MODEL_NAME, MAX_LEN
@@ -42,21 +51,32 @@ def save_checkpoint(
 
 
 def load_checkpoint(checkpoint_path: str, device: torch.device):
-    """加载 checkpoint；不存在时返回 None。"""
+    """加载 checkpoint；不存在或无效时返回 None。
+
+    仅接受包含 training_meta.json 的微调 checkpoint，
+    以避免加载仅含基础预训练权重的目录（无分类器头）。
+    """
     save_dir = Path(checkpoint_path)
     if not save_dir.exists() or not (save_dir / "config.json").exists():
         return None
 
     meta_path = save_dir / "training_meta.json"
+    if not meta_path.exists():
+        print(
+            f"Skipping {save_dir}: not a fine-tuned checkpoint"
+            f" (missing training_meta.json —"
+            f" classifier weights have not been trained)"
+        )
+        return None
+
     model_name = BERT_MODEL_NAME
     loaded_max_len = MAX_LEN
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            model_name = str(meta.get("model_name", BERT_MODEL_NAME))
-            loaded_max_len = int(meta.get("max_len", MAX_LEN))
-        except Exception:
-            pass
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        model_name = str(meta.get("model_name", BERT_MODEL_NAME))
+        loaded_max_len = int(meta.get("max_len", MAX_LEN))
+    except Exception:
+        pass
 
     model = SentimentBertModel(model_name=model_name).to(device)
     model.backbone = model.backbone.from_pretrained(str(save_dir)).to(device)

@@ -86,6 +86,11 @@ def _keyword_baseline(text: str) -> PredictResult:
 def _predict_with_lstm(text: str) -> PredictResult:
 	"""LSTM 推理分支。"""
 	model_path = os.getenv("MODEL_PATH", "")
+	# 兼容目录路径：自动查找其中的 .pt 文件
+	p = Path(model_path)
+	if p.is_dir():
+		pt_files = sorted(p.glob("*.pt"))
+		model_path = str(pt_files[0]) if pt_files else model_path
 	vocab_size = int(os.getenv("MODEL_VOCAB_SIZE", "65536"))
 	max_len = int(os.getenv("MODEL_MAX_LEN", "100"))
 	# 与根目录旧训练脚本默认结构保持一致。
@@ -159,8 +164,13 @@ def _check_model_exists(model_type: str) -> str | None:
 		model_path = os.getenv("MODEL_PATH", "")
 		if model_path:
 			raw = Path(model_path)
-			if raw.is_absolute() and raw.exists():
+			if raw.is_file() and raw.exists():
 				return None
+			if raw.is_dir():
+				pt_files = sorted(raw.glob("*.pt"))
+				if pt_files:
+					os.environ["MODEL_PATH"] = str(pt_files[0])
+					return None
 	elif model_type == "bert":
 		checkpoint_path = os.getenv("BERT_CHECKPOINT_PATH", "")
 		if checkpoint_path:

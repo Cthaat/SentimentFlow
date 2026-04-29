@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# 在导入 transformers 之前抑制 HF Hub 后台线程请求，避免 403 报错
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
 
 _ENV_LOADED = False
 
@@ -69,7 +75,16 @@ def get_active_model_config() -> dict[str, str | None]:
 def set_active_model(model_type: str, model_path: str) -> None:
     """设置活跃模型路径。"""
     ensure_backend_env_loaded()
+
+    from pathlib import Path
+
     if model_type == "lstm":
+        p = Path(model_path)
+        # 若传入的是目录，自动查找其中的 .pt 文件
+        if p.is_dir():
+            pt_files = sorted(p.glob("*.pt"))
+            if pt_files:
+                model_path = str(pt_files[0])
         _active_config["lstm_path"] = model_path
         os.environ["MODEL_PATH"] = model_path
     elif model_type == "bert":
