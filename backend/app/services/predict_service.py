@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.core.config import ensure_backend_env_loaded, get_active_model_config, get_predict_model_type
 from app.models.BERT import predict_text as predict_text_with_bert_model
@@ -122,22 +123,53 @@ def _predict_with_bert(text: str) -> PredictResult:
 	)
 
 
+def _check_model_exists(model_type: str) -> str | None:
+	"""检查指定类型的模型文件是否存在。返回错误信息，若存在则返回 None。"""
+	if model_type == "lstm":
+		model_path = os.getenv("MODEL_PATH", "./app/models/sentiment_model.pt")
+		raw = Path(model_path)
+		backend_dir = Path(__file__).resolve().parents[2]  # backend/
+		candidates = []
+		if raw.is_absolute():
+			candidates.append(raw)
+		else:
+			candidates.extend([Path.cwd() / raw, backend_dir / raw])
+		if not any(c.exists() for c in candidates):
+			return f"LSTM 模型文件不存在（{model_path}），请先在「模型训练」页面训练 LSTM 模型"
+	elif model_type == "bert":
+		checkpoint_path = os.getenv("BERT_CHECKPOINT_PATH", "./checkpoints/bert")
+		raw = Path(checkpoint_path)
+		backend_dir = Path(__file__).resolve().parents[2]
+		candidates = [raw] if raw.is_absolute() else [Path.cwd() / raw, backend_dir / raw]
+		if not any((c / "config.json").exists() for c in candidates):
+			return f"BERT 模型文件不存在（{checkpoint_path}），请先在「模型训练」页面训练 BERT 模型"
+	return None
+
+
 def predict_text(text: str, model_type: str | None = None) -> PredictResult:
 	"""对外统一预测入口。
 
 	策略：
 	- 若请求显式指定 model_type，则优先使用。
 	- 否则读取 backend/.env 的 PREDICT_MODEL_TYPE（默认 lstm）。
-	- 模型分支失败时降级到关键词基线，避免接口直接报错。
+	- 模型文件缺失时直接报错（提示用户先训练），不降级到关键词基线。
+	- 模型分支运行时异常时降级到关键词基线。
 	"""
 	ensure_backend_env_loaded()
 	effective_model = (model_type or get_predict_model_type("lstm")).strip().lower()
+
+	# 先检查模型文件是否存在，缺失则直接报错
+	missing_msg = _check_model_exists(effective_model)
+	if missing_msg:
+		raise FileNotFoundError(missing_msg)
 
 	try:
 		if effective_model == "bert":
 			return _predict_with_bert(text)
 		if effective_model == "lstm":
 			return _predict_with_lstm(text)
+	except FileNotFoundError:
+		raise
 	except Exception as exc:
 		fallback = _keyword_baseline(text)
 		fallback.source = f"{fallback.source}-fallback({effective_model}:{type(exc).__name__})"

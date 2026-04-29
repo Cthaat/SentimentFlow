@@ -57,7 +57,7 @@ export async function POST(request: Request) {
 				baseUrl: base,
 				payload: data,
 			},
-			{ status: response.ok ? 200 : 502 },
+			{ status: response.ok ? 200 : response.status },
 		);
 	} catch (error) {
 		return NextResponse.json(

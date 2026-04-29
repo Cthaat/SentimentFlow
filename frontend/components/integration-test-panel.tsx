@@ -60,7 +60,7 @@ export function IntegrationTestPanel() {
 				body: JSON.stringify(body),
 			});
 			const data = (await response.json()) as ApiResult;
-			setPredictResult(data);
+			setPredictResult({ ...data, upstreamStatus: response.status });
 		} catch (error) {
 			setPredictResult({
 				ok: false,
@@ -70,6 +70,13 @@ export function IntegrationTestPanel() {
 			setPredictLoading(false);
 		}
 	};
+
+	const noModelError =
+		predictResult && !predictResult.ok && predictResult.upstreamStatus === 404
+			? (predictResult.payload as { detail?: string })?.detail ||
+			  predictResult.error ||
+			  "模型文件不存在，请先在「模型训练」页面训练模型"
+			: null;
 
 	return (
 		<Card className="w-full max-w-3xl">
@@ -119,6 +126,17 @@ export function IntegrationTestPanel() {
 						{predictLoading ? "请求中..." : "发送预测请求"}
 					</Button>
 				</div>
+
+				{noModelError && (
+					<div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/30">
+						<p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+							未检测到可用模型
+						</p>
+						<p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
+							{noModelError}
+						</p>
+					</div>
+				)}
 
 				<div className="grid gap-4 md:grid-cols-2">
 					<div className="rounded-lg border p-3">
