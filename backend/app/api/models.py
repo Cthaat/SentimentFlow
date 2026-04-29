@@ -36,7 +36,6 @@ def _detect_model_type(path: Path) -> str:
     if path.is_dir():
         if (path / "config.json").exists() and (path / "model.safetensors").exists():
             return "bert"
-        # LSTM 训练产出的 .pt 文件
         if list(path.glob("*.pt")):
             return "lstm"
     elif path.suffix == ".pt":
@@ -45,7 +44,7 @@ def _detect_model_type(path: Path) -> str:
 
 
 def _read_meta(path: Path) -> dict[str, Any]:
-    """读取模型的元信息。"""
+    """读取模型的元信息（仅从 training_meta.json，不加载模型权重）。"""
     meta: dict[str, Any] = {}
     meta_path = path / "training_meta.json"
     if meta_path.exists():
@@ -53,19 +52,6 @@ def _read_meta(path: Path) -> dict[str, Any]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:
             pass
-
-    if not meta and path.is_dir():
-        # 对于 LSTM，尝试从 .pt 文件中读取
-        for pt_file in sorted(path.glob("*.pt")):
-            try:
-                import torch
-                ck = torch.load(pt_file, map_location="cpu")
-                if isinstance(ck, dict):
-                    meta["best_val_f1"] = ck.get("best_val_f1")
-                    meta["best_epoch"] = ck.get("best_epoch")
-                break
-            except Exception:
-                pass
     return meta
 
 
@@ -82,7 +68,6 @@ def _scan_models() -> list[dict[str, Any]]:
         if model_type == "unknown":
             continue
 
-        # model_id 使用目录名或文件名（不含扩展名）
         model_id = entry.name if entry.is_dir() else entry.stem
         meta = _read_meta(entry) if entry.is_dir() else {}
 

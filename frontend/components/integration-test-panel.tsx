@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,34 @@ export function IntegrationTestPanel() {
 	const [predictLoading, setPredictLoading] = useState(false);
 	const [healthResult, setHealthResult] = useState<ApiResult | null>(null);
 	const [predictResult, setPredictResult] = useState<ApiResult | null>(null);
+	const [activeModelName, setActiveModelName] = useState<string | null>(null);
+
+	const fetchActiveModel = useCallback(async () => {
+		try {
+			const res = await fetch("/api/models/active");
+			const data = await res.json();
+			if (data.ok && data.payload) {
+				const p = data.payload as {
+					lstm_path?: string;
+					bert_path?: string;
+					predict_model_type?: string;
+				};
+				const usedType = p.predict_model_type || "lstm";
+				const path = usedType === "lstm" ? p.lstm_path : p.bert_path;
+				if (path) {
+					const parts = path.replace(/\\/g, "/").split("/");
+					const dir = parts[parts.length - 2];
+					setActiveModelName(dir?.startsWith(usedType) ? dir : path);
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}, []);
+
+	useEffect(() => {
+		fetchActiveModel();
+	}, [fetchActiveModel]);
 
 	const backendStatus = useMemo(() => {
 		if (!healthResult) return "未检测";
@@ -126,10 +154,10 @@ export function IntegrationTestPanel() {
 					</div>
 				)}
 
-				{usedModelName && (
+				{(usedModelName || activeModelName) && (
 					<div className="flex items-center gap-2 rounded-lg border border-green-300 bg-green-50 px-3 py-2 dark:border-green-700 dark:bg-green-900/30">
 						<span className="text-xs text-muted-foreground">当前使用模型</span>
-						<Badge variant="default" className="text-xs">{usedModelName}</Badge>
+						<Badge variant="default" className="text-xs">{usedModelName || activeModelName}</Badge>
 					</div>
 				)}
 
