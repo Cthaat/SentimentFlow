@@ -53,6 +53,8 @@ class PredictResult:
 	score: float
 	# 结果来源：用于区分规则基线或模型推理。
 	source: str
+	# 模型名称：当前使用的模型标识。
+	model_name: str = ""
 
 
 def _keyword_baseline(text: str) -> PredictResult:
@@ -70,20 +72,20 @@ def _keyword_baseline(text: str) -> PredictResult:
 
 	# 没有明显情绪词时返回中性结果。
 	if pos_hits == 0 and neg_hits == 0:
-		return PredictResult(text=text, label="中性", score=0.5, source="keyword-baseline")
+		return PredictResult(text=text, label="中性", score=0.5, source="keyword-baseline", model_name="关键词基线")
 	# 正向命中不小于负向命中，判为正面。
 	if pos_hits >= neg_hits:
 		score = min(0.55 + 0.1 * (pos_hits - neg_hits + 1), 0.99)
-		return PredictResult(text=text, label="正面", score=round(score, 4), source="keyword-baseline")
+		return PredictResult(text=text, label="正面", score=round(score, 4), source="keyword-baseline", model_name="关键词基线")
 
 	# 否则判为负面。
 	score = min(0.55 + 0.1 * (neg_hits - pos_hits + 1), 0.99)
-	return PredictResult(text=text, label="负面", score=round(score, 4), source="keyword-baseline")
+	return PredictResult(text=text, label="负面", score=round(score, 4), source="keyword-baseline", model_name="关键词基线")
 
 
 def _predict_with_lstm(text: str) -> PredictResult:
 	"""LSTM 推理分支。"""
-	model_path = os.getenv("MODEL_PATH", "./app/models/sentiment_model.pt")
+	model_path = os.getenv("MODEL_PATH", "")
 	vocab_size = int(os.getenv("MODEL_VOCAB_SIZE", "65536"))
 	max_len = int(os.getenv("MODEL_MAX_LEN", "100"))
 	# 与根目录旧训练脚本默认结构保持一致。
@@ -109,41 +111,75 @@ def _predict_with_lstm(text: str) -> PredictResult:
 	score = confs[0]
 	label = "正面" if pred == 1 else "负面"
 
-	return PredictResult(text=text, label=label, score=round(float(score), 4), source="lstm")
+	model_dir = Path(model_path).parent.name if Path(model_path).parent.name.startswith("lstm_") else Path(model_path).stem
+	return PredictResult(text=text, label=label, score=round(float(score), 4), source="lstm", model_name=model_dir)
 
 
 def _predict_with_bert(text: str) -> PredictResult:
 	"""BERT 推理分支。"""
 	result = predict_text_with_bert_model(text)
+	model_name = Path(os.getenv("BERT_CHECKPOINT_PATH", "")).name
 	return PredictResult(
 		text=result["text"],
 		label=result["label"],
 		score=round(float(result["confidence"]), 4),
 		source="bert",
+		model_name=model_name,
 	)
+
+
+def _get_models_dir() -> Path:
+	backend_dir = Path(__file__).resolve().parents[2]  # backend/
+	return backend_dir.parent / "models"  # SentimentFlow/models/
+
+
+def _scan_models_of_type(model_type: str) -> list[Path]:
+	"""扫描 models/ 目录，返回指定类型模型的路径列表（按名称倒序，最新的在前）。"""
+	models_dir = _get_models_dir()
+	if not models_dir.exists():
+		return []
+
+	result = []
+	for entry in sorted(models_dir.iterdir(), reverse=True):
+		if entry.name.startswith("."):
+			continue
+		if model_type == "lstm":
+			if entry.is_dir() and list(entry.glob("*.pt")):
+				result.append(entry)
+		elif model_type == "bert":
+			if entry.is_dir() and (entry / "config.json").exists():
+				result.append(entry)
+	return result
 
 
 def _check_model_exists(model_type: str) -> str | None:
 	"""检查指定类型的模型文件是否存在。返回错误信息，若存在则返回 None。"""
+	# 先检查当前活跃模型路径
 	if model_type == "lstm":
-		model_path = os.getenv("MODEL_PATH", "./app/models/sentiment_model.pt")
-		raw = Path(model_path)
-		backend_dir = Path(__file__).resolve().parents[2]  # backend/
-		candidates = []
-		if raw.is_absolute():
-			candidates.append(raw)
-		else:
-			candidates.extend([Path.cwd() / raw, backend_dir / raw])
-		if not any(c.exists() for c in candidates):
-			return f"LSTM 模型文件不存在（{model_path}），请先在「模型训练」页面训练 LSTM 模型"
+		model_path = os.getenv("MODEL_PATH", "")
+		if model_path:
+			raw = Path(model_path)
+			if raw.is_absolute() and raw.exists():
+				return None
 	elif model_type == "bert":
-		checkpoint_path = os.getenv("BERT_CHECKPOINT_PATH", "./checkpoints/bert")
-		raw = Path(checkpoint_path)
-		backend_dir = Path(__file__).resolve().parents[2]
-		candidates = [raw] if raw.is_absolute() else [Path.cwd() / raw, backend_dir / raw]
-		if not any((c / "config.json").exists() for c in candidates):
-			return f"BERT 模型文件不存在（{checkpoint_path}），请先在「模型训练」页面训练 BERT 模型"
-	return None
+		checkpoint_path = os.getenv("BERT_CHECKPOINT_PATH", "")
+		if checkpoint_path:
+			raw = Path(checkpoint_path)
+			if raw.is_dir() and (raw / "config.json").exists():
+				return None
+
+	# 活跃路径不可用，扫描 models/ 目录
+	available = _scan_models_of_type(model_type)
+	if available:
+		# 自动激活最新的模型
+		latest = str(available[0])
+		if model_type == "lstm":
+			os.environ["MODEL_PATH"] = str(available[0] / "model.pt")
+		else:
+			os.environ["BERT_CHECKPOINT_PATH"] = latest
+		return None
+
+	return f"{model_type.upper()} 模型不存在，请先在「模型训练」页面训练 {model_type.upper()} 模型"
 
 
 def predict_text(text: str, model_type: str | None = None) -> PredictResult:

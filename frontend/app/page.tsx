@@ -1,10 +1,11 @@
 "use client";
 import { useState } from "react";
 import { IntegrationTestPanel } from "@/components/integration-test-panel";
+import { ModelManagementPanel } from "@/components/model-management-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TrainingPanel } from "@/components/training-panel";
 
-type Tab = "predict" | "train";
+type Tab = "predict" | "train" | "models";
 
 export default function Home() {
 	const [activeTab, setActiveTab] = useState<Tab>("predict");
@@ -41,9 +42,26 @@ export default function Home() {
 					>
 						模型训练
 					</button>
+					<button
+						type="button"
+						onClick={() => setActiveTab("models")}
+						className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+							activeTab === "models"
+								? "bg-background text-foreground shadow-sm"
+								: "text-muted-foreground hover:text-foreground"
+						}`}
+					>
+						模型管理
+					</button>
 				</div>
 
-				{activeTab === "predict" ? <IntegrationTestPanel /> : <TrainingPanel />}
+				{activeTab === "predict" ? (
+					<IntegrationTestPanel />
+				) : activeTab === "train" ? (
+					<TrainingPanel />
+				) : (
+					<ModelManagementPanel />
+				)}
 			</main>
 		</div>
 	);

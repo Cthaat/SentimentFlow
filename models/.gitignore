@@ -1,0 +1,12 @@
+# 忽略模型文件（体积大），但保留目录结构
+*.pt
+*.safetensors
+*.bin
+*.h5
+*.pth
+config.json
+tokenizer.json
+vocab.txt
+special_tokens_map.json
+training_meta.json
+*.model

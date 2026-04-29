@@ -26,4 +26,5 @@ def predict(req: PredictRequest) -> PredictResponse:
         label=result.label,
         score=result.score,
         source=result.source,
+        model_name=result.model_name,
     )

@@ -1,13 +1,14 @@
-"""模型管理 API 路由。"""
+"""模型管理 API 路由。
+
+所有训练产出统一存放在项目根目录的 models/ 下，每个模型一个子目录（含时间戳）。
+"""
 
 from __future__ import annotations
 
-import hashlib
-import os
+import json
 from pathlib import Path
 from typing import Any
 
-import torch
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_active_model_config, set_active_model
@@ -20,103 +21,78 @@ from app.schemas.models import (
 
 router = APIRouter()
 
-# 模型文件搜索目录（相对于 backend 目录）
-_MODEL_SEARCH_DIRS: list[Path] = []
 
-
-def _get_search_dirs() -> list[Path]:
-    if _MODEL_SEARCH_DIRS:
-        return _MODEL_SEARCH_DIRS
-
-    backend_dir = Path(__file__).resolve().parent.parent  # backend/app
-    candidates = [
-        backend_dir / "app" / "models",
-        backend_dir / "app" / "models" / "LSTM",
-        backend_dir / "app" / "models" / "BERT",
-    ]
-    _MODEL_SEARCH_DIRS.extend([d for d in candidates if d.exists()])
-    return _MODEL_SEARCH_DIRS
+def _get_models_dir() -> Path:
+    """返回统一模型目录（项目根目录下的 models/）。"""
+    backend_dir = Path(__file__).resolve().parents[2]  # backend/
+    project_root = backend_dir.parent  # SentimentFlow/
+    models_dir = project_root / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return models_dir
 
 
 def _detect_model_type(path: Path) -> str:
-    """通过文件内容和名称推断模型类型。"""
-    name = path.name.lower()
+    """通过目录内容推断模型类型。"""
     if path.is_dir():
-        # BERT 模型目录包含 config.json 和 model.safetensors
         if (path / "config.json").exists() and (path / "model.safetensors").exists():
             return "bert"
-    if path.suffix == ".pt":
-        # 检查 checkpoint 内容
-        try:
-            ck = torch.load(path, map_location="cpu")
-            if isinstance(ck, dict):
-                # BERT 的 training_meta.json 有 model_name；LSTM 的 .pt 有 vocab_size
-                if "vocab_size" in ck:
-                    return "lstm"
-        except Exception:
-            pass
+        # LSTM 训练产出的 .pt 文件
+        if list(path.glob("*.pt")):
+            return "lstm"
+    elif path.suffix == ".pt":
         return "lstm"
     return "unknown"
 
 
-def _scan_models() -> list[dict[str, Any]]:
-    """扫描模型目录，返回模型信息列表。"""
-    models: list[dict[str, Any]] = []
-    seen = set()
+def _read_meta(path: Path) -> dict[str, Any]:
+    """读取模型的元信息。"""
+    meta: dict[str, Any] = {}
+    meta_path = path / "training_meta.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
 
-    for search_dir in _get_search_dirs():
-        if not search_dir.exists():
+    if not meta and path.is_dir():
+        # 对于 LSTM，尝试从 .pt 文件中读取
+        for pt_file in sorted(path.glob("*.pt")):
+            try:
+                import torch
+                ck = torch.load(pt_file, map_location="cpu")
+                if isinstance(ck, dict):
+                    meta["best_val_f1"] = ck.get("best_val_f1")
+                    meta["best_epoch"] = ck.get("best_epoch")
+                break
+            except Exception:
+                pass
+    return meta
+
+
+def _scan_models() -> list[dict[str, Any]]:
+    """扫描 models/ 目录，每个子目录作为一个模型条目。"""
+    models: list[dict[str, Any]] = []
+    models_dir = _get_models_dir()
+
+    for entry in sorted(models_dir.iterdir()):
+        if entry.name.startswith("."):
             continue
 
-        for entry in search_dir.iterdir():
-            if entry.name.startswith("."):
-                continue
+        model_type = _detect_model_type(entry)
+        if model_type == "unknown":
+            continue
 
-            if entry.is_dir():
-                if (entry / "config.json").exists() and (entry / "model.safetensors").exists():
-                    model_id = hashlib.md5(str(entry).encode()).hexdigest()[:8]
-                    if model_id in seen:
-                        continue
-                    seen.add(model_id)
+        # model_id 使用目录名或文件名（不含扩展名）
+        model_id = entry.name if entry.is_dir() else entry.stem
+        meta = _read_meta(entry) if entry.is_dir() else {}
 
-                    # 读取 training_meta.json
-                    meta = {}
-                    meta_path = entry / "training_meta.json"
-                    if meta_path.exists():
-                        import json
-                        try:
-                            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                        except Exception:
-                            pass
-
-                    models.append({
-                        "model_id": model_id,
-                        "model_type": "bert",
-                        "path": str(entry),
-                        "best_f1": meta.get("best_val_f1"),
-                        "best_epoch": meta.get("best_epoch"),
-                    })
-            elif entry.suffix == ".pt":
-                model_id = hashlib.md5(str(entry).encode()).hexdigest()[:8]
-                if model_id in seen:
-                    continue
-                seen.add(model_id)
-
-                try:
-                    ck = torch.load(entry, map_location="cpu")
-                    models.append({
-                        "model_id": model_id,
-                        "model_type": "lstm",
-                        "path": str(entry),
-                        "best_f1": ck.get("best_val_f1") if isinstance(ck, dict) else None,
-                        "best_epoch": ck.get("best_epoch") if isinstance(ck, dict) else None,
-                    })
-                except Exception:
-                    models.append({
-                        "model_id": model_id,
-                        "model_type": "lstm",
-                        "path": str(entry),
-                    })
+        models.append({
+            "model_id": model_id,
+            "model_type": model_type,
+            "path": str(entry),
+            "best_f1": meta.get("best_val_f1"),
+            "best_epoch": meta.get("best_epoch"),
+        })
 
     return models
 

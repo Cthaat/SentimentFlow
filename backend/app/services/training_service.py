@@ -1,6 +1,7 @@
 """训练任务管理器。
 
 在后台线程中运行 LSTM/BERT 训练，捕获进度并提供 SSE 兼容的状态查询。
+训练产出统一保存到项目根目录 models/{type}_{timestamp}/ 下。
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ class TrainingJob:
     finished_at: str | None = None
     config: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    model_path: str | None = None  # 训练产出的模型路径
 
     _cancel_flag: threading.Event = field(default_factory=threading.Event)
 
@@ -66,6 +68,7 @@ class TrainingJob:
             "finished_at": self.finished_at,
             "config": self.config,
             "error": self.error,
+            "model_path": self.model_path,
         }
 
 
@@ -138,6 +141,22 @@ class TrainingManager:
         for key, value in job.config.items():
             os.environ[key] = str(value)
 
+        # 创建带时间戳的模型保存路径，统一放到 models/ 目录下
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        models_dir = _project_root / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        if job.model_type == "lstm":
+            model_dir = models_dir / f"lstm_{ts}"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            os.environ["MODEL_PATH"] = str(model_dir / "model.pt")
+            job.model_path = str(model_dir)
+        elif job.model_type == "bert":
+            model_dir = models_dir / f"bert_{ts}"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            os.environ["BERT_CHECKPOINT_PATH"] = str(model_dir)
+            job.model_path = str(model_dir)
+
         # 重定向 stdout 以捕获训练日志
         capture = _StreamCapture(job)
 
@@ -161,11 +180,9 @@ class TrainingManager:
     def _train_lstm(self, job: TrainingJob) -> None:
         from training.trainer import train_model
 
-        # 写入 epochs 到环境变量
         epochs = job.config.get("EPOCHS")
         if epochs is not None:
             import training.config as cfg
-            # 通过 monkey-patch 修改 epochs
             cfg.EPOCHS = int(epochs)
 
         job.progress.total_epochs = int(os.getenv("EPOCHS", "25"))
@@ -211,7 +228,6 @@ class _StreamCapture:
             if full_line:
                 self.job.logs.append(full_line)
 
-                # 解析 epoch 指标行
                 m = _EPOCH_PATTERN.search(full_line)
                 if m:
                     self.job.progress.current_epoch = int(m.group(1))
@@ -219,7 +235,6 @@ class _StreamCapture:
                     self.job.progress.val_acc = float(m.group(3))
                     self.job.progress.val_f1 = float(m.group(4))
 
-                # 解析最佳模型更新行
                 m2 = _BEST_MODEL_PATTERN.search(full_line)
                 if m2:
                     self.job.progress.best_f1 = float(m2.group(1))
