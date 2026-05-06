@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -29,8 +30,12 @@ if str(_project_root) not in sys.path:
 
 @dataclass
 class TrainingProgress:
+    stage: str = "queued"
+    stage_detail: str | None = None
     current_epoch: int = 0
     total_epochs: int = 0
+    current_step: int = 0
+    total_steps: int = 0
     loss: float | None = None
     val_acc: float | None = None
     val_f1: float | None = None
@@ -58,8 +63,12 @@ class TrainingJob:
             "model_type": self.model_type,
             "status": self.status,
             "progress": {
+                "stage": self.progress.stage,
+                "stage_detail": self.progress.stage_detail,
                 "current_epoch": self.progress.current_epoch,
                 "total_epochs": self.progress.total_epochs,
+                "current_step": self.progress.current_step,
+                "total_steps": self.progress.total_steps,
                 "loss": self.progress.loss,
                 "val_acc": self.progress.val_acc,
                 "val_f1": self.progress.val_f1,
@@ -76,6 +85,9 @@ class TrainingJob:
 
 _EPOCH_PATTERN = re.compile(
     r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([\d.]+)[,.]?\s*ValAcc:\s*([\d.]+)[,.]?\s*ValMacroF1:\s*([\d.]+)"
+)
+_STEP_PATTERN = re.compile(
+    r"Epoch\s+(\d+)/(\d+),\s*Step\s+(\d+)/(\d+),\s*Loss:\s*([\d.]+)"
 )
 _BEST_MODEL_PATTERN = re.compile(r"Best model updated at epoch \d+, ValMacroF1=([\d.]+)")
 
@@ -146,7 +158,11 @@ class TrainingManager:
     def _run_training(self, job: TrainingJob) -> None:
         """在后台线程执行训练。"""
         job.status = "running"
+        job.progress.stage = "starting"
+        job.progress.stage_detail = "训练任务已创建，正在准备运行环境"
         job.started_at = datetime.now(timezone.utc).isoformat()
+        job.logs.append(f"[INFO] Training job {job.job_id} accepted")
+        time.sleep(0.5)
 
         # 将用户配置写入环境变量（仅影响当前线程的子进程）
         env_updates = {key: str(value) for key, value in job.config.items()}
@@ -165,6 +181,7 @@ class TrainingManager:
             model_dir.mkdir(parents=True, exist_ok=True)
             env_updates["BERT_CHECKPOINT_PATH"] = str(model_dir)
             job.model_path = str(model_dir)
+        job.logs.append(f"[INFO] Model output path: {job.model_path}")
 
         # 重定向 stdout 以捕获训练日志
         capture = _StreamCapture(job)
@@ -180,12 +197,18 @@ class TrainingManager:
 
             if job._cancel_flag.is_set():
                 job.status = "cancelled"
+                job.progress.stage = "cancelled"
+                job.progress.stage_detail = "训练已取消"
             else:
                 job.status = "completed"
+                job.progress.stage = "completed"
+                job.progress.stage_detail = "训练完成"
                 if job.model_path:
                     set_active_model(job.model_type, job.model_path)
         except Exception as exc:
             job.status = "failed"
+            job.progress.stage = "failed"
+            job.progress.stage_detail = "训练失败"
             job.error = f"{type(exc).__name__}: {exc}"
             job.logs.append(f"[ERROR] {job.error}")
         finally:
@@ -195,12 +218,16 @@ class TrainingManager:
         from training.trainer import train_model
 
         job.progress.total_epochs = int(os.getenv("EPOCHS", "25"))
+        job.progress.stage = "initializing"
+        job.progress.stage_detail = "正在加载 LSTM 训练数据和运行配置"
         train_model(cancel_event=job._cancel_flag)
 
     def _train_bert(self, job: TrainingJob) -> None:
         from BERT.trainer import train_model
 
         job.progress.total_epochs = int(os.getenv("BERT_EPOCHS", "5"))
+        job.progress.stage = "initializing"
+        job.progress.stage_detail = "正在加载 BERT 训练数据和 tokenizer"
         train_model(cancel_event=job._cancel_flag)
 
 
@@ -231,17 +258,44 @@ class _StreamCapture:
 
             if full_line:
                 self.job.logs.append(full_line)
+                self._update_progress(full_line)
 
-                m = _EPOCH_PATTERN.search(full_line)
-                if m:
-                    self.job.progress.current_epoch = int(m.group(1))
-                    self.job.progress.loss = float(m.group(2))
-                    self.job.progress.val_acc = float(m.group(3))
-                    self.job.progress.val_f1 = float(m.group(4))
+    def _update_progress(self, line: str) -> None:
+        if line.startswith("Datasets:"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = line
+        elif line.startswith("DATA SUMMARY"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = "训练数据已加载，正在统计样本分布"
+        elif line.startswith("Training config:"):
+            self.job.progress.stage = "training"
+            self.job.progress.stage_detail = line
+        elif line.startswith("Training cancellation requested"):
+            self.job.progress.stage = "cancelling"
+            self.job.progress.stage_detail = "正在停止训练循环"
 
-                m2 = _BEST_MODEL_PATTERN.search(full_line)
-                if m2:
-                    self.job.progress.best_f1 = float(m2.group(1))
+        step_match = _STEP_PATTERN.search(line)
+        if step_match:
+            self.job.progress.stage = "training"
+            self.job.progress.current_epoch = int(step_match.group(1))
+            self.job.progress.total_epochs = int(step_match.group(2))
+            self.job.progress.current_step = int(step_match.group(3))
+            self.job.progress.total_steps = int(step_match.group(4))
+            self.job.progress.loss = float(step_match.group(5))
+
+        m = _EPOCH_PATTERN.search(line)
+        if m:
+            self.job.progress.stage = "evaluating"
+            self.job.progress.stage_detail = f"Epoch {m.group(1)} 验证完成"
+            self.job.progress.current_epoch = int(m.group(1))
+            self.job.progress.current_step = self.job.progress.total_steps
+            self.job.progress.loss = float(m.group(2))
+            self.job.progress.val_acc = float(m.group(3))
+            self.job.progress.val_f1 = float(m.group(4))
+
+        m2 = _BEST_MODEL_PATTERN.search(line)
+        if m2:
+            self.job.progress.best_f1 = float(m2.group(1))
 
     def flush(self) -> None:
         self._original_stdout.flush()

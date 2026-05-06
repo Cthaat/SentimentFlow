@@ -13,14 +13,20 @@ interface JobStatus {
   model_type: string;
   status: string;
   progress: {
+    stage: string;
+    stage_detail: string | null;
     current_epoch: number;
     total_epochs: number;
+    current_step: number;
+    total_steps: number;
     loss: number | null;
     val_acc: number | null;
     val_f1: number | null;
     best_f1: number | null;
   };
   logs: string[];
+  started_at: string | null;
+  finished_at: string | null;
   config: Record<string, unknown>;
   error: string | null;
   model_path?: string | null;
@@ -64,7 +70,10 @@ export function TrainingPanel() {
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
+  const [connectionState, setConnectionState] = useState<"idle" | "connecting" | "live" | "polling" | "closed">("idle");
+  const [now, setNow] = useState(() => Date.now());
   const eventSourceRef = useRef<EventSource | null>(null);
+  const pollTimerRef = useRef<number | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // 切换模型类型时重置参数
@@ -85,13 +94,63 @@ export function TrainingPanel() {
   useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
+      if (pollTimerRef.current != null) {
+        window.clearInterval(pollTimerRef.current);
+      }
     };
   }, []);
 
+  useEffect(() => {
+    if (!loading && !jobStatus) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [loading, jobStatus]);
+
+  const appendLog = useCallback((line: string) => {
+    setLogLines((prev) => {
+      if (prev[prev.length - 1] === line) return prev;
+      return [...prev.slice(-300), line];
+    });
+  }, []);
+
+  const updateJobStatus = useCallback((next: JobStatus) => {
+    setJobStatus(next);
+    if (next.logs?.length) {
+      setLogLines((prev) => {
+        const seen = new Set(prev);
+        const merged = [...prev];
+        for (const line of next.logs) {
+          if (!seen.has(line)) {
+            merged.push(line);
+            seen.add(line);
+          }
+        }
+        return merged.slice(-300);
+      });
+    }
+    if (next.error) {
+      appendLog(`[ERROR] ${next.error}`);
+    }
+    if (isTerminalStatus(next.status)) {
+      eventSourceRef.current?.close();
+      if (pollTimerRef.current != null) {
+        window.clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      setConnectionState("closed");
+      setLoading(false);
+    }
+  }, [appendLog]);
+
   const startTraining = async () => {
     setLoading(true);
+    setJobId(null);
     setJobStatus(null);
-    setLogLines([]);
+    setConnectionState("connecting");
+    setLogLines([
+      "正在提交训练任务...",
+      "如果后端正在启动模型或加载训练模块，启动请求最多会等待 120 秒。",
+    ]);
 
     const datasetKey = modelType === "lstm" ? "TRAIN_DATASETS" : "BERT_TRAIN_DATASETS";
     const config: Record<string, string> = {
@@ -108,41 +167,48 @@ export function TrainingPanel() {
       const data = await res.json();
       if (data.ok && data.payload.job_id) {
         setJobId(data.payload.job_id);
+        appendLog(`训练任务已创建: ${data.payload.job_id}`);
         connectSSE(data.payload.job_id);
       } else {
-        setLogLines(["启动训练失败: " + getErrorMessage(data)]);
+        appendLog("启动训练失败: " + getErrorMessage(data));
+        setConnectionState("closed");
         setLoading(false);
       }
     } catch (err) {
-      setLogLines(["请求失败: " + (err instanceof Error ? err.message : String(err))]);
+      appendLog("请求失败: " + (err instanceof Error ? err.message : String(err)));
+      setConnectionState("closed");
       setLoading(false);
     }
   };
 
   const connectSSE = (id: string) => {
     eventSourceRef.current?.close();
+    if (pollTimerRef.current != null) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    setConnectionState("connecting");
     const es = new EventSource(`/api/training/stream/${id}`);
     eventSourceRef.current = es;
+
+    es.onopen = () => {
+      setConnectionState("live");
+      appendLog("实时日志通道已连接");
+    };
 
     es.onmessage = (event) => {
       if (event.data === "[DONE]") {
         es.close();
+        setConnectionState("closed");
         setLoading(false);
         return;
       }
       try {
         const data = JSON.parse(event.data);
         if (data.type === "log") {
-          setLogLines((prev) => [...prev.slice(-200), data.message as string]);
+          appendLog(data.message as string);
         } else if (data.job_id) {
-          setJobStatus(data as JobStatus);
-          if (data.error) {
-            setLogLines((prev) => [...prev.slice(-200), `[ERROR] ${data.error}`]);
-          }
-          if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
-            es.close();
-            setLoading(false);
-          }
+          updateJobStatus(data as JobStatus);
         }
       } catch {
         // 忽略非 JSON 消息
@@ -150,8 +216,34 @@ export function TrainingPanel() {
     };
 
     es.onerror = () => {
-      // SSE 连接断开时重试
+      es.close();
+      appendLog("实时日志通道断开，切换为状态轮询...");
+      startPolling(id);
     };
+  };
+
+  const startPolling = (id: string) => {
+    if (pollTimerRef.current != null) {
+      window.clearInterval(pollTimerRef.current);
+    }
+    setConnectionState("polling");
+
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`/api/training/status/${id}`, { cache: "no-store" });
+        const data = await res.json();
+        if (data.ok && data.payload) {
+          updateJobStatus(data.payload as JobStatus);
+        } else {
+          appendLog("状态轮询失败: " + getErrorMessage(data));
+        }
+      } catch (err) {
+        appendLog("状态轮询请求失败: " + (err instanceof Error ? err.message : String(err)));
+      }
+    };
+
+    void fetchStatus();
+    pollTimerRef.current = window.setInterval(fetchStatus, 2000);
   };
 
   const cancelTraining = async () => {
@@ -166,7 +258,8 @@ export function TrainingPanel() {
       // 忽略
     }
     eventSourceRef.current?.close();
-    setLoading(false);
+    appendLog("已发送取消请求，等待训练循环停止...");
+    startPolling(jobId);
   };
 
   const toggleDataset = (value: string) => {
@@ -186,6 +279,17 @@ export function TrainingPanel() {
           : jobStatus?.status === "cancelled"
             ? "已取消"
             : "待启动";
+  const stageText = getStageText(jobStatus?.progress.stage);
+  const epochPercent =
+    jobStatus && jobStatus.progress.total_epochs > 0
+      ? (jobStatus.progress.current_epoch / jobStatus.progress.total_epochs) * 100
+      : 0;
+  const stepPercent =
+    jobStatus && jobStatus.progress.total_steps > 0
+      ? (jobStatus.progress.current_step / jobStatus.progress.total_steps) * 100
+      : 0;
+  const elapsedText = getElapsedText(jobStatus, loading, now);
+  const latestLog = logLines.length > 0 ? logLines[logLines.length - 1] : "尚未收到训练日志";
 
   return (
     <Card className="w-full max-w-3xl">
@@ -270,22 +374,62 @@ export function TrainingPanel() {
         {/* 操作按钮 */}
         <div className="flex gap-2">
           <Button onClick={startTraining} disabled={loading || selectedDatasets.length === 0}>
-            {loading ? "训练中..." : "开始训练"}
+            {loading ? (jobStatus ? "训练中..." : "启动中...") : "开始训练"}
           </Button>
           {loading && (
             <Button variant="outline" onClick={cancelTraining}>
               取消训练
             </Button>
           )}
+          {connectionState !== "idle" && (
+            <Badge variant={connectionState === "live" ? "default" : "outline"} className="self-center">
+              {getConnectionText(connectionState)}
+            </Badge>
+          )}
         </div>
+
+        {loading && !jobStatus && (
+          <div className="space-y-3 rounded-lg border border-dashed p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">正在启动训练任务</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  后端会先创建 job_id，再进入数据加载和训练循环。启动阶段最长等待 120 秒。
+                </p>
+              </div>
+              <Badge variant="outline">等待响应</Badge>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+            </div>
+          </div>
+        )}
 
         {/* 训练进度 */}
         {jobStatus && (
           <div className="space-y-4 rounded-lg border p-4">
-            <h4 className="text-sm font-medium">训练进度</h4>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-medium">训练进度</h4>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Job {jobStatus.job_id} · {jobStatus.model_type.toUpperCase()} · 已运行 {elapsedText}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={statusVariant === "destructive" ? "destructive" : statusVariant === "outline" ? "outline" : "default"}>
+                  {statusText}
+                </Badge>
+                <Badge variant="outline">{stageText}</Badge>
+              </div>
+            </div>
             {jobStatus.model_path && (
               <p className="break-all text-xs text-muted-foreground">
                 模型路径: {jobStatus.model_path}
+              </p>
+            )}
+            {jobStatus.progress.stage_detail && (
+              <p className="break-all rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                {jobStatus.progress.stage_detail}
               </p>
             )}
             {jobStatus.error && (
@@ -303,15 +447,29 @@ export function TrainingPanel() {
               <div className="h-2 w-full rounded-full bg-muted">
                 <div
                   className="h-full rounded-full bg-primary transition-all duration-500"
-                  style={{
-                    width: `${jobStatus.progress.total_epochs > 0 ? (jobStatus.progress.current_epoch / jobStatus.progress.total_epochs) * 100 : 0}%`,
-                  }}
+                  style={{ width: `${epochPercent}%` }}
                 />
               </div>
             </div>
 
+            {jobStatus.progress.total_steps > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>当前 Epoch Step</span>
+                  <span>{jobStatus.progress.current_step} / {jobStatus.progress.total_steps}</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary/70 transition-all duration-500"
+                    style={{ width: `${stepPercent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* 指标 */}
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+              <MetricBox label="Elapsed" value={elapsedText} />
               <MetricBox label="Loss" value={jobStatus.progress.loss} suffix="" />
               <MetricBox label="Val Accuracy" value={jobStatus.progress.val_acc} suffix="%" isPercent />
               <MetricBox label="Val Macro F1" value={jobStatus.progress.val_f1} suffix="" />
@@ -321,12 +479,17 @@ export function TrainingPanel() {
         )}
 
         {/* 训练日志 */}
-        {logLines.length > 0 && (
+        {(logLines.length > 0 || loading) && (
           <div className="space-y-2">
-            <label className="text-sm font-medium">训练日志</label>
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-sm font-medium">训练日志</label>
+              <span className="text-xs text-muted-foreground">
+                {logLines.length} 行 · 最新: {latestLog.slice(0, 48)}
+              </span>
+            </div>
             <div
               ref={logContainerRef}
-              className="h-48 overflow-auto rounded-lg border bg-zinc-950 p-3 font-mono text-xs text-zinc-300 dark:bg-zinc-950"
+              className="h-64 overflow-auto rounded-lg border bg-zinc-950 p-3 font-mono text-xs text-zinc-300 dark:bg-zinc-950"
             >
               {logLines.map((line, i) => (
                 <div key={i} className="leading-relaxed">
@@ -351,6 +514,75 @@ function getErrorMessage(data: unknown): string {
   return record.payload?.detail || record.detail || record.error || JSON.stringify(data);
 }
 
+function isTerminalStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function getConnectionText(state: "idle" | "connecting" | "live" | "polling" | "closed"): string {
+  switch (state) {
+    case "connecting":
+      return "连接中";
+    case "live":
+      return "实时日志";
+    case "polling":
+      return "轮询更新";
+    case "closed":
+      return "连接关闭";
+    default:
+      return "未连接";
+  }
+}
+
+function getStageText(stage?: string): string {
+  switch (stage) {
+    case "starting":
+      return "启动中";
+    case "initializing":
+      return "初始化";
+    case "data_ready":
+      return "数据就绪";
+    case "training":
+      return "训练中";
+    case "evaluating":
+      return "验证中";
+    case "cancelling":
+      return "取消中";
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+    default:
+      return "排队中";
+  }
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function getElapsedText(jobStatus: JobStatus | null, loading: boolean, now: number): string {
+  if (!jobStatus?.started_at) {
+    return loading ? "启动中" : "-";
+  }
+
+  const start = new Date(jobStatus.started_at).getTime();
+  const end = jobStatus.finished_at ? new Date(jobStatus.finished_at).getTime() : now;
+  return formatDuration(Math.max(0, end - start));
+}
+
 function MetricBox({
   label,
   value,
@@ -358,15 +590,17 @@ function MetricBox({
   isPercent,
 }: {
   label: string;
-  value: number | null;
-  suffix: string;
+  value: number | string | null;
+  suffix?: string;
   isPercent?: boolean;
 }) {
   const display =
-    value != null
+    typeof value === "string"
+      ? value
+      : value != null
       ? isPercent
-        ? `${(value * 100).toFixed(2)}${suffix}`
-        : `${value.toFixed(4)}${suffix}`
+        ? `${(value * 100).toFixed(2)}${suffix ?? ""}`
+        : `${value.toFixed(4)}${suffix ?? ""}`
       : "-";
   return (
     <div className="rounded-lg border p-2 text-center">

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { proxyToBackend } from "@/lib/api-proxy";
 
+const TRAINING_START_TIMEOUT_MS = 120000;
+
 export async function POST(request: Request) {
   let body: { model_type?: string; config?: Record<string, unknown> } = {};
   try {
@@ -17,7 +19,7 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, TRAINING_START_TIMEOUT_MS);
     const data = await response.json();
     return NextResponse.json({ ok: response.ok, upstreamStatus: response.status, baseUrl, payload: data }, { status: response.ok ? 200 : response.status });
   } catch (error) {

@@ -19,8 +19,12 @@ class TrainingStartResponse(BaseModel):
 
 
 class TrainingProgressSchema(BaseModel):
+    stage: str = "queued"
+    stage_detail: str | None = None
     current_epoch: int
     total_epochs: int
+    current_step: int = 0
+    total_steps: int = 0
     loss: float | None
     val_acc: float | None
     val_f1: float | None

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 import threading
 from copy import deepcopy
@@ -115,6 +116,7 @@ def train_model(cancel_event: threading.Event | None = None):
     settings = get_runtime_settings(device.type)
     epochs = get_epochs()
     checkpoint_path = get_checkpoint_path()
+    log_interval = max(1, int(os.getenv("TRAIN_LOG_INTERVAL", "20")))
     dataset_names, train_split, val_split, label_map = build_train_split_and_val_split()
     train_size = len(train_split)
     val_size = len(val_split)
@@ -134,11 +136,13 @@ def train_model(cancel_event: threading.Event | None = None):
         f"Training config: batch_size={settings.batch_size}, "
         f"grad_accum_steps={settings.grad_accum_steps}, num_workers={settings.num_workers}, "
         f"epochs={epochs}, "
+        f"log_interval={log_interval}, "
         f"early_stop_patience={settings.early_stop_patience}, "
         f"early_stop_min_delta={settings.early_stop_min_delta}"
     )
 
     loader = _build_train_loader(train_split, settings, device, label_map)
+    estimated_batches = max(1, math.ceil(train_size / settings.batch_size))
 
     model = SentimentLSTMModel(VOCAB_SIZE).to(device)
     loss_fn = _build_loss_fn(neg_count, pos_count, total_count, settings, device)
@@ -195,6 +199,13 @@ def train_model(cancel_event: threading.Event | None = None):
 
             # 累积损失以计算平均损失值，便于在日志中输出。每个 epoch 结束后，在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
             total_loss += loss.detach()
+
+            if step == 1 or step % log_interval == 0:
+                step_loss = (loss.detach() * settings.grad_accum_steps).item()
+                print(
+                    f"Epoch {epoch + 1}/{epochs}, Step {step}/{estimated_batches}, "
+                    f"Loss: {step_loss:.4f}"
+                )
 
         if batch_count > 0 and step % settings.grad_accum_steps != 0:
             if scaler.is_enabled():
