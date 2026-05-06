@@ -18,6 +18,7 @@ class ModelListResponse(BaseModel):
     models: list[ModelInfo]
     active_lstm_path: str | None = None
     active_bert_path: str | None = None
+    predict_model_type: str
 
 
 class SetActiveModelRequest(BaseModel):

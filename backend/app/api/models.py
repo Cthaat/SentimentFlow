@@ -104,6 +104,7 @@ def list_models():
         models=model_infos,
         active_lstm_path=active.get("lstm_path"),
         active_bert_path=active.get("bert_path"),
+        predict_model_type=active.get("predict_model_type", "lstm"),
     )
 
 

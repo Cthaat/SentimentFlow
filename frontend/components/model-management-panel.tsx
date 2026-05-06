@@ -6,9 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
+type ModelType = "lstm" | "bert";
+
 interface ModelInfo {
 	model_id: string;
-	model_type: "lstm" | "bert";
+	model_type: ModelType;
 	path: string;
 	size_mb: number | null;
 	best_f1: number | null;
@@ -19,12 +21,20 @@ interface ModelsResponse {
 	models: ModelInfo[];
 	active_lstm_path: string | null;
 	active_bert_path: string | null;
+	predict_model_type: ModelType;
+}
+
+interface ActiveModelResponse {
+	lstm_path: string | null;
+	bert_path: string | null;
+	predict_model_type: ModelType;
 }
 
 export function ModelManagementPanel() {
 	const [models, setModels] = useState<ModelInfo[]>([]);
 	const [activeLstmPath, setActiveLstmPath] = useState<string | null>(null);
 	const [activeBertPath, setActiveBertPath] = useState<string | null>(null);
+	const [predictModelType, setPredictModelType] = useState<ModelType>("lstm");
 	const [loading, setLoading] = useState(false);
 	const [deletingId, setDeletingId] = useState<string | null>(null);
 	const [activatingId, setActivatingId] = useState<string | null>(null);
@@ -39,6 +49,7 @@ export function ModelManagementPanel() {
 				setModels(p.models || []);
 				setActiveLstmPath(p.active_lstm_path || null);
 				setActiveBertPath(p.active_bert_path || null);
+				setPredictModelType(p.predict_model_type || "lstm");
 			}
 		} catch {
 			// ignore
@@ -64,11 +75,10 @@ export function ModelManagementPanel() {
 			});
 			const data = await res.json();
 			if (data.ok) {
-				if (model.model_type === "lstm") {
-					setActiveLstmPath(model.path);
-				} else {
-					setActiveBertPath(model.path);
-				}
+				const p = data.payload as ActiveModelResponse | undefined;
+				setActiveLstmPath(p ? p.lstm_path : model.model_type === "lstm" ? model.path : activeLstmPath);
+				setActiveBertPath(p ? p.bert_path : model.model_type === "bert" ? model.path : activeBertPath);
+				setPredictModelType(p?.predict_model_type || model.model_type);
 			}
 		} catch {
 			// ignore
@@ -105,8 +115,9 @@ export function ModelManagementPanel() {
 	};
 
 	const isActive = (model: ModelInfo) =>
-		(model.model_type === "lstm" && activeLstmPath === model.path) ||
-		(model.model_type === "bert" && activeBertPath === model.path);
+		model.model_type === predictModelType &&
+		((model.model_type === "lstm" && activeLstmPath === model.path) ||
+			(model.model_type === "bert" && activeBertPath === model.path));
 
 	const formatTimestamp = (modelId: string): string => {
 		// 从目录名提取时间戳，如 lstm_20260429_143025 -> 2026-04-29 14:30:25
@@ -123,11 +134,16 @@ export function ModelManagementPanel() {
 				<div className="flex items-center justify-between">
 					<div>
 						<CardTitle>模型管理</CardTitle>
-						<CardDescription>浏览已训练的模型，切换活跃模型或删除不需要的模型</CardDescription>
+						<CardDescription>浏览已训练的模型，切换当前预测模型或删除不需要的模型</CardDescription>
 					</div>
-					<Button size="sm" variant="outline" onClick={fetchModels} disabled={loading}>
-						{loading ? "加载中..." : "刷新列表"}
-					</Button>
+					<div className="flex shrink-0 items-center gap-2">
+						<Badge variant="secondary" className="hidden sm:inline-flex">
+							当前预测: {predictModelType.toUpperCase()}
+						</Badge>
+						<Button size="sm" variant="outline" onClick={fetchModels} disabled={loading}>
+							{loading ? "加载中..." : "刷新列表"}
+						</Button>
+					</div>
 				</div>
 			</CardHeader>
 			<CardContent className="space-y-4">
