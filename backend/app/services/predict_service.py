@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import ensure_backend_env_loaded, get_active_model_config, get_predict_model_type
+from app.core.paths import get_models_dir, normalize_lstm_model_dir
 from app.models.BERT import predict_text as predict_text_with_bert_model
 from app.models.LSTM import load_model as load_lstm_model
 from app.models.LSTM import predict_batch as predict_batch_with_lstm_model
@@ -134,8 +135,7 @@ def _predict_with_bert(text: str) -> PredictResult:
 
 
 def _get_models_dir() -> Path:
-	backend_dir = Path(__file__).resolve().parents[2]  # backend/
-	return backend_dir.parent / "models"  # SentimentFlow/models/
+	return get_models_dir(create=False)
 
 
 def _scan_models_of_type(model_type: str) -> list[Path]:
@@ -152,7 +152,11 @@ def _scan_models_of_type(model_type: str) -> list[Path]:
 			if entry.is_dir() and list(entry.glob("*.pt")):
 				result.append(entry)
 		elif model_type == "bert":
-			if entry.is_dir() and (entry / "config.json").exists():
+			has_bert_weights = any(
+				(entry / filename).exists()
+				for filename in ("model.safetensors", "pytorch_model.bin")
+			)
+			if entry.is_dir() and (entry / "config.json").exists() and has_bert_weights:
 				result.append(entry)
 	return result
 
@@ -184,7 +188,8 @@ def _check_model_exists(model_type: str) -> str | None:
 		# 自动激活最新的模型
 		latest = str(available[0])
 		if model_type == "lstm":
-			os.environ["MODEL_PATH"] = str(available[0] / "model.pt")
+			pt_files = sorted(available[0].glob("*.pt"))
+			os.environ["MODEL_PATH"] = str(pt_files[0])
 		else:
 			os.environ["BERT_CHECKPOINT_PATH"] = latest
 		return None
@@ -203,6 +208,10 @@ def predict_text(text: str, model_type: str | None = None) -> PredictResult:
 	"""
 	ensure_backend_env_loaded()
 	effective_model = (model_type or get_predict_model_type("lstm")).strip().lower()
+	if effective_model not in {"lstm", "bert"}:
+		fallback = _keyword_baseline(text)
+		fallback.source = f"{fallback.source}-fallback(invalid-model:{effective_model})"
+		return fallback
 
 	# 先检查模型文件是否存在，缺失则直接报错
 	missing_msg = _check_model_exists(effective_model)

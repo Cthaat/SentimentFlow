@@ -8,13 +8,13 @@ from pathlib import Path
 import torch
 
 from .checkpoint import load_checkpoint as _load_checkpoint
-from .config import CHECKPOINT_PATH
+from .config import get_checkpoint_path
 from .trainer import train_model
 
 
 def load_checkpoint(device: torch.device):
     """按默认 checkpoint 路径加载模型。"""
-    return _load_checkpoint(CHECKPOINT_PATH, device=device)
+    return _load_checkpoint(get_checkpoint_path(), device=device)
 
 
 def load_or_train():
@@ -31,7 +31,8 @@ def load_or_train():
         if model is not None:
             return model, device
 
-    ckpt_path = Path(CHECKPOINT_PATH) if CHECKPOINT_PATH else None
+    checkpoint_path = get_checkpoint_path()
+    ckpt_path = Path(checkpoint_path) if checkpoint_path else None
     if ckpt_path and ckpt_path.exists():
         raise FileNotFoundError(
             f"BERT checkpoint at {ckpt_path} is not a valid fine-tuned model"

@@ -18,6 +18,16 @@ DEFAULT_CHUNK_SIZE = 4096
 CHECKPOINT_PATH = os.getenv("MODEL_PATH", "./sentiment_model.pt")
 
 
+def get_checkpoint_path() -> str:
+    """运行时读取 checkpoint 路径，避免 API 动态配置被 import 缓存吞掉。"""
+    return os.getenv("MODEL_PATH", CHECKPOINT_PATH)
+
+
+def get_epochs() -> int:
+    """运行时读取训练轮数。"""
+    return int(os.getenv("EPOCHS", str(EPOCHS)))
+
+
 @dataclass(frozen=True)
 class RuntimeSettings:
     """运行期可调参数。

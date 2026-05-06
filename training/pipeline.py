@@ -7,13 +7,13 @@ import os
 import torch
 
 from .checkpoint import load_checkpoint as _load_checkpoint
-from .config import CHECKPOINT_PATH, VOCAB_SIZE
+from .config import VOCAB_SIZE, get_checkpoint_path
 from .trainer import train_model
 
 
 def load_checkpoint(device: torch.device):
     """按默认 checkpoint 路径加载模型。"""
-    return _load_checkpoint(CHECKPOINT_PATH, device=device, default_vocab_size=VOCAB_SIZE)
+    return _load_checkpoint(get_checkpoint_path(), device=device, default_vocab_size=VOCAB_SIZE)
 
 
 def load_or_train():

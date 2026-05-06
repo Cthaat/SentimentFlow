@@ -3,9 +3,15 @@
  * 避免因不可达地址（如 Docker 内部域名 backend:8000）造成的长时间等待。
  */
 
-const CONNECTION_TIMEOUT_MS = 3000;
+const DEFAULT_CONNECTION_TIMEOUT_MS = 10000;
 
 const configuredBase = process.env.BACKEND_API_URL || process.env.NEXT_SERVER_API_BASE_URL;
+const configuredTimeoutMs = Number(process.env.BACKEND_API_TIMEOUT_MS);
+
+export const CONNECTION_TIMEOUT_MS =
+  Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? configuredTimeoutMs
+    : DEFAULT_CONNECTION_TIMEOUT_MS;
 
 export function getBaseCandidates(): string[] {
   if (configuredBase) {

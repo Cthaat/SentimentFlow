@@ -12,15 +12,17 @@ import re
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.config import ensure_backend_env_loaded
+from app.core.config import ensure_backend_env_loaded, set_active_model
+from app.core.paths import get_models_dir, get_project_root
 
 # 确保 backend 进程可以导入项目根目录下的 training 和 BERT 包
-_project_root = Path(__file__).resolve().parents[3]  # SentimentFlow/
+_project_root = get_project_root()
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
@@ -91,6 +93,7 @@ class TrainingManager:
                     cls._instance = super().__new__(cls)
                     cls._instance._jobs: dict[str, TrainingJob] = {}
                     cls._instance._threads: dict[str, threading.Thread] = {}
+                    cls._instance._state_lock = threading.Lock()
         return cls._instance
 
     def start_training(self, model_type: str, config: dict | None = None) -> TrainingJob:
@@ -100,13 +103,21 @@ class TrainingManager:
         if config is None:
             config = {}
 
-        job = TrainingJob(
-            job_id=uuid.uuid4().hex[:12],
-            model_type=model_type,
-            status="pending",
-            config=config,
-        )
-        self._jobs[job.job_id] = job
+        with self._state_lock:
+            active_job = next(
+                (j for j in self._jobs.values() if j.status in ("pending", "running")),
+                None,
+            )
+            if active_job is not None:
+                raise RuntimeError(f"Training job {active_job.job_id} is already {active_job.status}")
+
+            job = TrainingJob(
+                job_id=uuid.uuid4().hex[:12],
+                model_type=model_type,
+                status="pending",
+                config=config,
+            )
+            self._jobs[job.job_id] = job
 
         thread = threading.Thread(
             target=self._run_training,
@@ -138,30 +149,28 @@ class TrainingManager:
         job.started_at = datetime.now(timezone.utc).isoformat()
 
         # 将用户配置写入环境变量（仅影响当前线程的子进程）
-        for key, value in job.config.items():
-            os.environ[key] = str(value)
+        env_updates = {key: str(value) for key, value in job.config.items()}
 
         # 创建带时间戳的模型保存路径，统一放到 models/ 目录下
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        models_dir = _project_root / "models"
-        models_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = get_models_dir(create=True)
 
         if job.model_type == "lstm":
             model_dir = models_dir / f"lstm_{ts}"
             model_dir.mkdir(parents=True, exist_ok=True)
-            os.environ["MODEL_PATH"] = str(model_dir / "model.pt")
+            env_updates["MODEL_PATH"] = str(model_dir / "model.pt")
             job.model_path = str(model_dir)
         elif job.model_type == "bert":
             model_dir = models_dir / f"bert_{ts}"
             model_dir.mkdir(parents=True, exist_ok=True)
-            os.environ["BERT_CHECKPOINT_PATH"] = str(model_dir)
+            env_updates["BERT_CHECKPOINT_PATH"] = str(model_dir)
             job.model_path = str(model_dir)
 
         # 重定向 stdout 以捕获训练日志
         capture = _StreamCapture(job)
 
         try:
-            with capture:
+            with _temporary_env(env_updates), capture:
                 if job.model_type == "lstm":
                     self._train_lstm(job)
                 elif job.model_type == "bert":
@@ -169,7 +178,12 @@ class TrainingManager:
                 else:
                     raise ValueError(f"Unknown model_type: {job.model_type}")
 
-            job.status = "completed"
+            if job._cancel_flag.is_set():
+                job.status = "cancelled"
+            else:
+                job.status = "completed"
+                if job.model_path:
+                    set_active_model(job.model_type, job.model_path)
         except Exception as exc:
             job.status = "failed"
             job.error = f"{type(exc).__name__}: {exc}"
@@ -180,24 +194,14 @@ class TrainingManager:
     def _train_lstm(self, job: TrainingJob) -> None:
         from training.trainer import train_model
 
-        epochs = job.config.get("EPOCHS")
-        if epochs is not None:
-            import training.config as cfg
-            cfg.EPOCHS = int(epochs)
-
         job.progress.total_epochs = int(os.getenv("EPOCHS", "25"))
-        train_model()
+        train_model(cancel_event=job._cancel_flag)
 
     def _train_bert(self, job: TrainingJob) -> None:
         from BERT.trainer import train_model
 
-        epochs = job.config.get("BERT_EPOCHS")
-        if epochs is not None:
-            import BERT.config as cfg
-            cfg.EPOCHS = int(epochs)
-
         job.progress.total_epochs = int(os.getenv("BERT_EPOCHS", "5"))
-        train_model()
+        train_model(cancel_event=job._cancel_flag)
 
 
 class _StreamCapture:
@@ -241,3 +245,19 @@ class _StreamCapture:
 
     def flush(self) -> None:
         self._original_stdout.flush()
+
+
+@contextmanager
+def _temporary_env(updates: dict[str, str]):
+    """临时写入训练环境变量，训练结束后恢复非活跃配置。"""
+    previous = {key: os.environ.get(key) for key in updates}
+    try:
+        for key, value in updates.items():
+            os.environ[key] = value
+        yield
+    finally:
+        for key, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value

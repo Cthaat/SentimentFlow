@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .config import MAX_LEN
+from .config import get_model_name
 from .dataset import CsvStreamDataset
 from .text_processing import get_tokenizer
 
@@ -23,7 +24,7 @@ def bert_collate_fn(batch, max_len: int = MAX_LEN):
     Returns:
         Dict with input_ids, attention_mask, labels as PyTorch tensors
     """
-    tokenizer = get_tokenizer()
+    tokenizer = get_tokenizer(get_model_name())
     texts, labels = zip(*batch)
 
     encoded = tokenizer(

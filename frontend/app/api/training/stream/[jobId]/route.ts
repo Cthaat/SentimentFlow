@@ -1,6 +1,4 @@
-import { getBaseCandidates } from "@/lib/api-proxy";
-
-const CONNECTION_TIMEOUT_MS = 3000;
+import { CONNECTION_TIMEOUT_MS, getBaseCandidates } from "@/lib/api-proxy";
 
 export async function GET(
   request: Request,

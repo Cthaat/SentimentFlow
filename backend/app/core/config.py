@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app.core.paths import get_backend_dir, get_models_dir, normalize_lstm_model_dir
+
 # 在导入 transformers 之前抑制 HF Hub 后台线程请求，避免 403 报错
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
@@ -13,6 +15,13 @@ os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
 _ENV_LOADED = False
 
 
+def _candidate_env_paths() -> list[Path]:
+	return [
+		get_backend_dir().parent / ".env",
+		get_backend_dir() / ".env",
+	]
+
+
 def load_backend_env(override: bool = False) -> Path:
 	"""加载 backend/.env 到进程环境变量。
 
@@ -21,7 +30,7 @@ def load_backend_env(override: bool = False) -> Path:
 	"""
 	global _ENV_LOADED
 
-	env_path = Path(__file__).resolve().parents[2] / ".env"
+	env_path = next((path for path in _candidate_env_paths() if path.exists()), _candidate_env_paths()[0])
 	if not env_path.exists():
 		_ENV_LOADED = True
 		return env_path
@@ -66,10 +75,29 @@ def get_active_model_config() -> dict[str, str | None]:
     """获取当前活跃模型配置。"""
     ensure_backend_env_loaded()
     return {
-        "lstm_path": _active_config.get("lstm_path") or os.getenv("MODEL_PATH"),
+        "lstm_path": _active_config.get("lstm_path") or _default_lstm_path(),
         "bert_path": _active_config.get("bert_path") or os.getenv("BERT_CHECKPOINT_PATH"),
         "predict_model_type": _active_config.get("predict_model_type") or get_predict_model_type(),
     }
+
+
+def _default_lstm_path() -> str | None:
+    configured = os.getenv("MODEL_PATH")
+    if configured:
+        return normalize_lstm_model_dir(configured)
+
+    legacy_path = get_backend_dir() / "app" / "models" / "sentiment_model.pt"
+    if legacy_path.exists():
+        return str(legacy_path.parent)
+
+    models_dir = get_models_dir(create=False)
+    if not models_dir.exists():
+        return None
+
+    for model_dir in sorted(models_dir.iterdir(), reverse=True):
+        if model_dir.is_dir() and list(model_dir.glob("*.pt")):
+            return str(model_dir)
+    return None
 
 
 def set_active_model(model_type: str, model_path: str) -> None:
@@ -85,7 +113,8 @@ def set_active_model(model_type: str, model_path: str) -> None:
             pt_files = sorted(p.glob("*.pt"))
             if pt_files:
                 model_path = str(pt_files[0])
-        _active_config["lstm_path"] = model_path
+        display_path = str(Path(model_path).parent if Path(model_path).is_file() else p)
+        _active_config["lstm_path"] = display_path
         os.environ["MODEL_PATH"] = model_path
     elif model_type == "bert":
         _active_config["bert_path"] = model_path

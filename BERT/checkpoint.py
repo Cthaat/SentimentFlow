@@ -83,5 +83,6 @@ def load_checkpoint(checkpoint_path: str, device: torch.device):
     model.eval()
 
     os.environ["BERT_MODEL_MAX_LEN"] = str(loaded_max_len)
+    os.environ["BERT_MODEL_NAME"] = model_name
     print(f"Loaded BERT model from {save_dir}")
     return model

@@ -10,6 +10,7 @@ interface ModelInfo {
 	model_id: string;
 	model_type: "lstm" | "bert";
 	path: string;
+	size_mb: number | null;
 	best_f1: number | null;
 	best_epoch: number | null;
 }
@@ -176,6 +177,9 @@ export function ModelManagementPanel() {
 										)}
 										{model.best_epoch != null && (
 											<span>Best Epoch: {model.best_epoch}</span>
+										)}
+										{model.size_mb != null && (
+											<span>{model.size_mb.toFixed(2)} MB</span>
 										)}
 									</div>
 								</div>

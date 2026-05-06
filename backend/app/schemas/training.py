@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TrainingStartRequest(BaseModel):
     model_type: str  # "lstm" | "bert"
-    config: dict[str, Any] = {}
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrainingStartResponse(BaseModel):
@@ -37,6 +37,7 @@ class TrainingStatusResponse(BaseModel):
     finished_at: str | None
     config: dict[str, Any]
     error: str | None
+    model_path: str | None = None
 
 
 class TrainingJobItem(BaseModel):

@@ -6,7 +6,7 @@ from functools import lru_cache
 
 from transformers import AutoTokenizer
 
-from .config import BERT_MODEL_NAME
+from .config import BERT_MODEL_NAME, get_model_name
 
 
 @lru_cache(maxsize=2)
@@ -17,7 +17,7 @@ def get_tokenizer(model_name: str = BERT_MODEL_NAME):
 
 def encode_text(text: str, max_len: int):
     """把文本编码为 BERT 所需输入。"""
-    tokenizer = get_tokenizer()
+    tokenizer = get_tokenizer(get_model_name())
     encoded = tokenizer(
         str(text or ""),
         max_length=max_len,

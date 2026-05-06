@@ -28,7 +28,10 @@ def start_training(req: TrainingStartRequest):
     if model_type not in ("lstm", "bert"):
         raise HTTPException(status_code=400, detail="model_type must be 'lstm' or 'bert'")
 
-    job = _manager.start_training(model_type, req.config)
+    try:
+        job = _manager.start_training(model_type, req.config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return TrainingStartResponse(job_id=job.job_id, status=job.status, model_type=job.model_type)
 
 

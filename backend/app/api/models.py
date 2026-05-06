@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_active_model_config, set_active_model
+from app.core.paths import get_models_dir
 from app.schemas.models import (
     ActiveModelResponse,
     ModelInfo,
@@ -24,17 +25,17 @@ router = APIRouter()
 
 def _get_models_dir() -> Path:
     """返回统一模型目录（项目根目录下的 models/）。"""
-    backend_dir = Path(__file__).resolve().parents[2]  # backend/
-    project_root = backend_dir.parent  # SentimentFlow/
-    models_dir = project_root / "models"
-    models_dir.mkdir(parents=True, exist_ok=True)
-    return models_dir
+    return get_models_dir(create=True)
 
 
 def _detect_model_type(path: Path) -> str:
     """通过目录内容推断模型类型。"""
     if path.is_dir():
-        if (path / "config.json").exists() and (path / "model.safetensors").exists():
+        has_bert_weights = any(
+            (path / filename).exists()
+            for filename in ("model.safetensors", "pytorch_model.bin")
+        )
+        if (path / "config.json").exists() and has_bert_weights:
             return "bert"
         if list(path.glob("*.pt")):
             return "lstm"
@@ -75,6 +76,7 @@ def _scan_models() -> list[dict[str, Any]]:
             "model_id": model_id,
             "model_type": model_type,
             "path": str(entry),
+            "size_mb": _dir_size_mb(entry),
             "best_f1": meta.get("best_val_f1"),
             "best_epoch": meta.get("best_epoch"),
         })
@@ -92,6 +94,7 @@ def list_models():
             model_id=m["model_id"],
             model_type=m["model_type"],
             path=m["path"],
+            size_mb=m.get("size_mb"),
             best_f1=m.get("best_f1"),
             best_epoch=m.get("best_epoch"),
         )
@@ -120,6 +123,16 @@ def set_active(req: SetActiveModelRequest):
     if model_type not in ("lstm", "bert"):
         raise HTTPException(status_code=400, detail="model_type must be 'lstm' or 'bert'")
 
+    model_path = Path(req.model_path)
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Model path not found")
+    detected_type = _detect_model_type(model_path)
+    if detected_type != model_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model path is {detected_type}, not {model_type}",
+        )
+
     set_active_model(model_type, req.model_path)
     active = get_active_model_config()
     return ActiveModelResponse(
@@ -137,6 +150,13 @@ def delete_model(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
     path = Path(target["path"])
+    models_dir = _get_models_dir().resolve()
+    try:
+        resolved_path = path.resolve()
+        resolved_path.relative_to(models_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Refusing to delete outside models directory")
+
     try:
         if path.is_dir():
             import shutil
@@ -147,3 +167,15 @@ def delete_model(model_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to delete: {exc}")
 
     return {"ok": True, "model_id": model_id}
+
+
+def _dir_size_mb(path: Path) -> float:
+    """计算模型目录大小，避免前端展示空信息。"""
+    total = 0
+    if path.is_file():
+        total = path.stat().st_size
+    else:
+        for file_path in path.rglob("*"):
+            if file_path.is_file():
+                total += file_path.stat().st_size
+    return round(total / (1024 * 1024), 2)

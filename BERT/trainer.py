@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from copy import deepcopy
 
 import torch
@@ -10,10 +11,10 @@ from torch.utils.data import DataLoader
 
 from .checkpoint import save_checkpoint
 from .config import (
-    BERT_MODEL_NAME,
-    CHECKPOINT_PATH,
-    EPOCHS,
     MAX_LEN,
+    get_checkpoint_path,
+    get_epochs,
+    get_model_name,
     get_runtime_settings,
 )
 from .data_sources import build_train_split_and_val_split, get_label_distribution
@@ -37,7 +38,7 @@ def bert_collate_fn(batch, max_len: int = MAX_LEN):
     Returns:
         Dict with input_ids, attention_mask, labels as PyTorch tensors
     """
-    tokenizer = get_tokenizer()
+    tokenizer = get_tokenizer(get_model_name())
     texts, labels = zip(*batch)
 
     encoded = tokenizer(
@@ -90,7 +91,7 @@ def _build_loss_fn(neg_count: int, pos_count: int, total_count: int, settings, d
     return nn.CrossEntropyLoss()
 
 
-def train_model():
+def train_model(cancel_event: threading.Event | None = None):
     """执行完整训练，返回最优模型和设备。"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
@@ -104,6 +105,9 @@ def train_model():
             torch.set_float32_matmul_precision("high")
 
     settings = get_runtime_settings(device.type)
+    epochs = get_epochs()
+    checkpoint_path = get_checkpoint_path()
+    model_name = get_model_name()
     dataset_names, train_split, val_split, label_map = build_train_split_and_val_split()
     train_size = len(train_split)
     val_size = len(val_split)
@@ -123,13 +127,14 @@ def train_model():
         f"Training config: batch_size={settings.batch_size}, "
         f"eval_batch_size={settings.eval_batch_size}, "
         f"grad_accum_steps={settings.grad_accum_steps}, num_workers={settings.num_workers}, "
+        f"epochs={epochs}, "
         f"early_stop_patience={settings.early_stop_patience}, "
-        f"early_stop_min_delta={settings.early_stop_min_delta}, model={BERT_MODEL_NAME}"
+        f"early_stop_min_delta={settings.early_stop_min_delta}, model={model_name}"
     )
 
     loader = _build_train_loader(train_split, settings, device, label_map)
 
-    model = SentimentBertModel(model_name=BERT_MODEL_NAME).to(device)
+    model = SentimentBertModel(model_name=model_name).to(device)
     loss_fn = _build_loss_fn(neg_count, pos_count, total_count, settings, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.learning_rate)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
@@ -140,13 +145,21 @@ def train_model():
     no_improve_epochs = 0
 
     model.train()
-    for epoch in range(EPOCHS):
+    for epoch in range(epochs):
+        if cancel_event is not None and cancel_event.is_set():
+            print("Training cancelled before next epoch.")
+            break
+
         total_loss = torch.zeros((), device=device)
         batch_count = 0
         step = 0
         optimizer.zero_grad(set_to_none=True)
 
         for step, batch in enumerate(loader, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                print("Training cancellation requested; stopping current epoch.")
+                break
+
             batch_count += 1
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
@@ -179,6 +192,9 @@ def train_model():
                 optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
+        if cancel_event is not None and cancel_event.is_set():
+            break
+
         val_acc, val_f1 = evaluate(
             model,
             val_split,
@@ -198,10 +214,10 @@ def train_model():
             best_state_dict = deepcopy(model.state_dict())
             no_improve_epochs = 0
             save_checkpoint(
-                checkpoint_path=CHECKPOINT_PATH,
+                checkpoint_path=checkpoint_path,
                 model=model,
                 max_len=MAX_LEN,
-                model_name=BERT_MODEL_NAME,
+                model_name=model_name,
                 best_val_f1=best_f1,
                 best_epoch=best_epoch,
             )
@@ -224,5 +240,7 @@ def train_model():
         model.load_state_dict(best_state_dict)
         print(f"Loaded best in-memory checkpoint from epoch {best_epoch}, ValMacroF1={best_f1:.4f}")
 
-    print(f"Training finished. Best model saved to {CHECKPOINT_PATH}")
+    if cancel_event is not None and cancel_event.is_set():
+        print("Training cancelled.")
+    print(f"Training finished. Best model saved to {checkpoint_path}")
     return model, device

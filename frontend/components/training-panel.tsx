@@ -23,6 +23,7 @@ interface JobStatus {
   logs: string[];
   config: Record<string, unknown>;
   error: string | null;
+  model_path?: string | null;
 }
 
 const DATASET_OPTIONS = [
@@ -109,7 +110,7 @@ export function TrainingPanel() {
         setJobId(data.payload.job_id);
         connectSSE(data.payload.job_id);
       } else {
-        setLogLines(["启动训练失败: " + JSON.stringify(data)]);
+        setLogLines(["启动训练失败: " + getErrorMessage(data)]);
         setLoading(false);
       }
     } catch (err) {
@@ -135,6 +136,9 @@ export function TrainingPanel() {
           setLogLines((prev) => [...prev.slice(-200), data.message as string]);
         } else if (data.job_id) {
           setJobStatus(data as JobStatus);
+          if (data.error) {
+            setLogLines((prev) => [...prev.slice(-200), `[ERROR] ${data.error}`]);
+          }
           if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
             es.close();
             setLoading(false);
@@ -279,6 +283,16 @@ export function TrainingPanel() {
         {jobStatus && (
           <div className="space-y-4 rounded-lg border p-4">
             <h4 className="text-sm font-medium">训练进度</h4>
+            {jobStatus.model_path && (
+              <p className="break-all text-xs text-muted-foreground">
+                模型路径: {jobStatus.model_path}
+              </p>
+            )}
+            {jobStatus.error && (
+              <p className="break-all text-sm text-destructive">
+                {jobStatus.error}
+              </p>
+            )}
 
             {/* 进度条 */}
             <div className="space-y-1">
@@ -325,6 +339,16 @@ export function TrainingPanel() {
       </CardContent>
     </Card>
   );
+}
+
+function getErrorMessage(data: unknown): string {
+  if (!data || typeof data !== "object") return String(data);
+  const record = data as {
+    error?: string;
+    payload?: { detail?: string };
+    detail?: string;
+  };
+  return record.payload?.detail || record.detail || record.error || JSON.stringify(data);
 }
 
 function MetricBox({
