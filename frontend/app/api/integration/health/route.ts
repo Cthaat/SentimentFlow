@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { proxyToBackend } from "@/lib/api-proxy";
 
-const HEALTH_TOTAL_TIMEOUT_MS = 30000;
-const HEALTH_ATTEMPT_TIMEOUT_MS = 5000;
-const HEALTH_RETRY_DELAY_MS = 1000;
+const HEALTH_TOTAL_TIMEOUT_MS = 8000;
+const HEALTH_ATTEMPT_TIMEOUT_MS = 1500;
+const HEALTH_RETRY_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,7 +35,11 @@ export async function GET() {
   }
 
   return NextResponse.json(
-    { ok: false, error: lastError instanceof Error ? lastError.message : "Backend unreachable" },
-    { status: 500 },
+    {
+      ok: false,
+      error: lastError instanceof Error ? lastError.message : "Backend is still starting or unreachable",
+      hint: "后端可能仍在启动或正忙，稍后重试即可。",
+    },
+    { status: 200 },
   );
 }
