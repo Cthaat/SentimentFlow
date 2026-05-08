@@ -1,14 +1,54 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { IntegrationTestPanel } from "@/components/integration-test-panel";
 import { ModelManagementPanel } from "@/components/model-management-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TrainingPanel } from "@/components/training-panel";
 
 type Tab = "predict" | "train" | "models";
+const ACTIVE_TAB_STORAGE_KEY = "sentimentflow.activeTab";
+const ACTIVE_TAB_CHANGE_EVENT = "sentimentflow.activeTabChanged";
+const TABS: Tab[] = ["predict", "train", "models"];
+
+function normalizeTab(value: string | null): Tab {
+	return TABS.includes(value as Tab) ? (value as Tab) : "predict";
+}
+
+function getStoredActiveTab(): Tab {
+	if (typeof window === "undefined") return "predict";
+	try {
+		const storedTab = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+		return normalizeTab(storedTab);
+	} catch {
+		return "predict";
+	}
+}
+
+function getServerActiveTab(): Tab {
+	return "predict";
+}
+
+function subscribeActiveTab(onStoreChange: () => void): () => void {
+	window.addEventListener("storage", onStoreChange);
+	window.addEventListener(ACTIVE_TAB_CHANGE_EVENT, onStoreChange);
+	return () => {
+		window.removeEventListener("storage", onStoreChange);
+		window.removeEventListener(ACTIVE_TAB_CHANGE_EVENT, onStoreChange);
+	};
+}
+
+function writeStoredActiveTab(tab: Tab): void {
+	try {
+		window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
+		window.dispatchEvent(new Event(ACTIVE_TAB_CHANGE_EVENT));
+	} catch {
+		// localStorage 不可用时保持当前页内交互不崩溃。
+	}
+}
 
 export default function Home() {
-	const [activeTab, setActiveTab] = useState<Tab>("predict");
+	const activeTab = useSyncExternalStore(subscribeActiveTab, getStoredActiveTab, getServerActiveTab);
+	const setActiveTab = useCallback((tab: Tab) => writeStoredActiveTab(tab), []);
 
 	return (
 		<div className="min-h-screen bg-zinc-50 px-4 py-10 dark:bg-zinc-900">
@@ -55,13 +95,15 @@ export default function Home() {
 					</button>
 				</div>
 
-				{activeTab === "predict" ? (
+				<div className={activeTab === "predict" ? "contents" : "hidden"} aria-hidden={activeTab !== "predict"}>
 					<IntegrationTestPanel />
-				) : activeTab === "train" ? (
+				</div>
+				<div className={activeTab === "train" ? "contents" : "hidden"} aria-hidden={activeTab !== "train"}>
 					<TrainingPanel />
-				) : (
+				</div>
+				<div className={activeTab === "models" ? "contents" : "hidden"} aria-hidden={activeTab !== "models"}>
 					<ModelManagementPanel />
-				)}
+				</div>
 			</main>
 		</div>
 	);

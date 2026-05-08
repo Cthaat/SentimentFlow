@@ -35,6 +35,14 @@ interface JobStatus {
   model_path?: string | null;
 }
 
+interface TrainingJobItem {
+  job_id: string;
+  model_type: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 const DATASET_OPTIONS = [
   { value: "lansinuote/ChnSentiCorp", label: "ChnSentiCorp (酒店)" },
   { value: "XiangPan/waimai_10k", label: "Waimai 10K (外卖)" },
@@ -64,6 +72,8 @@ const BERT_DEFAULTS: Record<string, string> = {
   BERT_TRAIN_WEIGHTED_LOSS: "1",
 };
 
+const ACTIVE_TRAINING_JOB_STORAGE_KEY = "sentimentflow.activeTrainingJobId";
+
 export function TrainingPanel() {
   const [modelType, setModelType] = useState<"lstm" | "bert">("lstm");
   const [params, setParams] = useState<Record<string, string>>({ ...LSTM_DEFAULTS });
@@ -78,6 +88,7 @@ export function TrainingPanel() {
   const [now, setNow] = useState(() => Date.now());
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<number | null>(null);
+  const restoreAttemptedRef = useRef(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // 切换模型类型时重置参数
@@ -118,7 +129,28 @@ export function TrainingPanel() {
   }, []);
 
   const updateJobStatus = useCallback((next: JobStatus) => {
+    window.localStorage.setItem(ACTIVE_TRAINING_JOB_STORAGE_KEY, next.job_id);
     setJobStatus(next);
+    setJobId(next.job_id);
+    if (next.model_type === "lstm" || next.model_type === "bert") {
+      setModelType(next.model_type);
+      const datasetKey = next.model_type === "lstm" ? "TRAIN_DATASETS" : "BERT_TRAIN_DATASETS";
+      const restoredParams: Record<string, string> = {};
+      for (const [key, value] of Object.entries(next.config ?? {})) {
+        if (key === datasetKey) continue;
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          restoredParams[key] = String(value);
+        }
+      }
+      setParams({
+        ...(next.model_type === "lstm" ? LSTM_DEFAULTS : BERT_DEFAULTS),
+        ...restoredParams,
+      });
+      const restoredDatasets = next.config?.[datasetKey];
+      if (typeof restoredDatasets === "string") {
+        setSelectedDatasets(restoredDatasets.split(",").map((item) => item.trim()).filter(Boolean));
+      }
+    }
     if (next.logs?.length) {
       setLogLines((prev) => {
         const seen = new Set(prev);
@@ -185,12 +217,40 @@ export function TrainingPanel() {
     }
   };
 
-  const connectSSE = (id: string) => {
+  const startPolling = useCallback((id: string) => {
+    if (pollTimerRef.current != null) {
+      window.clearInterval(pollTimerRef.current);
+    }
+    setJobId(id);
+    window.localStorage.setItem(ACTIVE_TRAINING_JOB_STORAGE_KEY, id);
+    setConnectionState("polling");
+
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`/api/training/status/${id}`, { cache: "no-store" });
+        const data = await res.json();
+        if (data.ok && data.payload) {
+          updateJobStatus(data.payload as JobStatus);
+        } else {
+          appendLog("状态轮询失败: " + getErrorMessage(data));
+        }
+      } catch (err) {
+        appendLog("状态轮询请求失败: " + (err instanceof Error ? err.message : String(err)));
+      }
+    };
+
+    void fetchStatus();
+    pollTimerRef.current = window.setInterval(fetchStatus, 2000);
+  }, [appendLog, updateJobStatus]);
+
+  const connectSSE = useCallback((id: string) => {
     eventSourceRef.current?.close();
     if (pollTimerRef.current != null) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    setJobId(id);
+    window.localStorage.setItem(ACTIVE_TRAINING_JOB_STORAGE_KEY, id);
     setConnectionState("connecting");
     const es = new EventSource(`/api/training/stream/${id}`);
     eventSourceRef.current = es;
@@ -224,31 +284,70 @@ export function TrainingPanel() {
       appendLog("实时日志通道断开，切换为状态轮询...");
       startPolling(id);
     };
-  };
+  }, [appendLog, startPolling, updateJobStatus]);
 
-  const startPolling = (id: string) => {
-    if (pollTimerRef.current != null) {
-      window.clearInterval(pollTimerRef.current);
-    }
-    setConnectionState("polling");
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    restoreAttemptedRef.current = true;
 
-    const fetchStatus = async () => {
+    let disposed = false;
+
+    const restoreJob = async (id: string, reason: string): Promise<boolean> => {
       try {
         const res = await fetch(`/api/training/status/${id}`, { cache: "no-store" });
         const data = await res.json();
-        if (data.ok && data.payload) {
-          updateJobStatus(data.payload as JobStatus);
+        if (!data.ok || !data.payload) return false;
+
+        const status = data.payload as JobStatus;
+        if (disposed) return true;
+
+        appendLog(reason);
+        updateJobStatus(status);
+        if (isTerminalStatus(status.status)) {
+          setLoading(false);
+          setConnectionState("closed");
         } else {
-          appendLog("状态轮询失败: " + getErrorMessage(data));
+          setLoading(true);
+          connectSSE(status.job_id);
         }
-      } catch (err) {
-        appendLog("状态轮询请求失败: " + (err instanceof Error ? err.message : String(err)));
+        return true;
+      } catch {
+        return false;
       }
     };
 
-    void fetchStatus();
-    pollTimerRef.current = window.setInterval(fetchStatus, 2000);
-  };
+    const restore = async () => {
+      const storedJobId = window.localStorage.getItem(ACTIVE_TRAINING_JOB_STORAGE_KEY);
+      if (storedJobId) {
+        const restored = await restoreJob(storedJobId, `已从浏览器恢复训练任务: ${storedJobId}`);
+        if (restored) return;
+        window.localStorage.removeItem(ACTIVE_TRAINING_JOB_STORAGE_KEY);
+      }
+
+      try {
+        const res = await fetch("/api/training/jobs", { cache: "no-store" });
+        const data = await res.json();
+        const jobs = ((data.payload?.jobs ?? []) as TrainingJobItem[])
+          .filter((job) => job.status === "pending" || job.status === "running")
+          .sort((left, right) => {
+            const leftTime = new Date(left.started_at || "").getTime() || 0;
+            const rightTime = new Date(right.started_at || "").getTime() || 0;
+            return rightTime - leftTime;
+          });
+        if (jobs[0] && !disposed) {
+          await restoreJob(jobs[0].job_id, `已自动发现正在运行的训练任务: ${jobs[0].job_id}`);
+        }
+      } catch {
+        // 后端不可达时保持空状态，用户仍可手动启动训练。
+      }
+    };
+
+    void restore();
+
+    return () => {
+      disposed = true;
+    };
+  }, [appendLog, connectSSE, updateJobStatus]);
 
   const cancelTraining = async () => {
     if (!jobId) return;

@@ -497,6 +497,8 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 | `USE_SYNTHETIC_DATA` | `0` | `1` = 生成合成短句混入训练 |
 | `SYNTHETIC_DATA_SIZE` | `5000` | 合成短句数量 |
 
+历史版本生成的 `extracted_short_sentences.csv` 可能仍是旧二分类标签，其中 `1` 表示正面。训练管道会先检查整份短句 CSV 的标签集合：若只有 `{0, 1}`，按旧二分类迁移到 `0/5`；若已经包含 0-5 多档标签，则保持原始评分。已经用错误短句标签训练出的 checkpoint 应删除、切换到健康模型，或重新训练。
+
 ### 后端
 
 | 变量 | 默认值 | 说明 |

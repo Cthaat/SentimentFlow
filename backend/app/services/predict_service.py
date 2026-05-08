@@ -35,6 +35,18 @@ POSITIVE_WORDS = {
 	"喜欢",
 	"推荐",
 	"优秀",
+	"好用",
+	"很好",
+	"非常好",
+	"不错",
+	"满意",
+	"超出预期",
+	"值得推荐",
+	"值得",
+	"流畅",
+	"惊喜",
+	"赞",
+	"棒",
 }
 
 
@@ -53,6 +65,15 @@ NEGATIVE_WORDS = {
 	"不推荐",
 	"不能接受",
 	"再也不",
+	"很差",
+	"太差",
+	"差劲",
+	"难用",
+	"后悔",
+	"退货",
+	"过敏",
+	"崩溃",
+	"慢",
 }
 
 
@@ -89,11 +110,7 @@ def _keyword_baseline(text: str) -> PredictResult:
 	- 统计正向和负向关键词命中次数。
 	- 根据命中差值给出标签和一个可解释的置信分数。
 	"""
-	# 将英文关键词匹配统一为小写比较；中文按原文匹配。
-	lowered = text.lower()
-	# 统计命中次数，作为情绪倾向的简单信号。
-	pos_hits = sum(1 for w in POSITIVE_WORDS if w in lowered or w in text)
-	neg_hits = sum(1 for w in NEGATIVE_WORDS if w in lowered or w in text)
+	pos_hits, neg_hits = _keyword_hits(text)
 
 	# 没有明显情绪词时返回中性结果。
 	if pos_hits == 0 and neg_hits == 0:
@@ -108,6 +125,30 @@ def _keyword_baseline(text: str) -> PredictResult:
 	sentiment_score = 0 if neg_hits - pos_hits >= 2 else 1
 	confidence = min(0.55 + 0.1 * (neg_hits - pos_hits + 1), 0.99)
 	return _make_result(text, sentiment_score, confidence, "keyword-baseline", "关键词基线")
+
+
+def _keyword_hits(text: str) -> tuple[int, int]:
+	"""统计强情感关键词命中，用于基线和坏 checkpoint 护栏。"""
+	lowered = text.lower()
+	pos_hits = sum(1 for word in POSITIVE_WORDS if word in lowered or word in text)
+	neg_hits = sum(1 for word in NEGATIVE_WORDS if word in lowered or word in text)
+	return pos_hits, neg_hits
+
+
+def _apply_keyword_conflict_guard(result: PredictResult) -> PredictResult:
+	"""防止明显污染的 checkpoint 高置信输出与强关键词证据完全冲突。"""
+	pos_hits, neg_hits = _keyword_hits(result.text)
+	if pos_hits >= 2 and neg_hits == 0 and result.score <= 1 and result.confidence >= 0.7:
+		guarded = _keyword_baseline(result.text)
+		guarded.source = f"{result.source}-keyword-guard"
+		guarded.model_name = result.model_name
+		return guarded
+	if neg_hits >= 2 and pos_hits == 0 and result.score >= 4 and result.confidence >= 0.7:
+		guarded = _keyword_baseline(result.text)
+		guarded.source = f"{result.source}-keyword-guard"
+		guarded.model_name = result.model_name
+		return guarded
+	return result
 
 
 def _make_result(
@@ -283,9 +324,9 @@ def predict_text(text: str, model_type: str | None = None) -> PredictResult:
 
 	try:
 		if effective_model == "bert":
-			return _predict_with_bert(text)
+			return _apply_keyword_conflict_guard(_predict_with_bert(text))
 		if effective_model == "lstm":
-			return _predict_with_lstm(text)
+			return _apply_keyword_conflict_guard(_predict_with_lstm(text))
 	except FileNotFoundError:
 		raise
 	except Exception as exc:

@@ -8,6 +8,7 @@ from typing import Dict
 
 from sentiment_scale import (
     LEGACY_BINARY_DATASETS,
+    LEGACY_BINARY_TO_SCORE,
     NUM_SENTIMENT_CLASSES,
     SENTIMENT_SCORES,
     choose_score_from_binary_teacher_probabilities,
@@ -97,6 +98,20 @@ def _project_standard_columns(split):
     if remove_columns:
         split = split.remove_columns(remove_columns)
     return split
+
+
+def _normalize_short_sentence_labels(raw_rows: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """兼容历史二分类短句 CSV 与新的 0-5 短句 CSV。"""
+    raw_values = {label for _, label in raw_rows}
+    legacy_binary = bool(raw_values) and raw_values.issubset(set(LEGACY_BINARY_TO_SCORE))
+    normalized_rows: list[tuple[str, int]] = []
+    for text, label in raw_rows:
+        try:
+            score = LEGACY_BINARY_TO_SCORE[label] if legacy_binary else validate_sentiment_score(label)
+        except ValueError:
+            continue
+        normalized_rows.append((text, score))
+    return normalized_rows
 
 
 def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = False):
@@ -611,8 +626,7 @@ def build_train_split_and_val_split():
             if csv_path.exists():
                 print(f"Loading extracted short sentences from {csv_path}...")
 
-                short_texts = []
-                short_labels = []
+                raw_short_rows: list[tuple[str, int]] = []
 
                 # 逐行解析 CSV，通过最后一个逗号分隔文本和标签
                 with open(csv_path, "r", encoding="utf-8") as f:
@@ -627,13 +641,13 @@ def build_train_split_and_val_split():
                             label_str = line[last_comma + 1 :]
                             try:
                                 label = int(label_str)
-                                score = validate_sentiment_score(label)
-                                if score in SENTIMENT_SCORES:
-                                    short_texts.append(text)
-                                    short_labels.append(score)
+                                raw_short_rows.append((text, label))
                             except ValueError:
                                 continue
 
+                normalized_rows = _normalize_short_sentence_labels(raw_short_rows)
+                short_texts = [text for text, _ in normalized_rows]
+                short_labels = [label for _, label in normalized_rows]
                 if short_texts:
                     from datasets import Dataset
 

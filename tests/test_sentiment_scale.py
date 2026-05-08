@@ -18,7 +18,9 @@ from sentiment_scale import (
 from training.data_sources import (
     _maybe_apply_semi_supervised_binary_refinement,
     _normalize_split_columns,
+    _normalize_short_sentence_labels,
 )
+from BERT.data_sources import _normalize_short_sentence_labels as _normalize_bert_short_sentence_labels
 from training.dataset import CsvStreamDataset as LstmCsvStreamDataset
 from training.evaluate import evaluate
 from training.inference import predict_text
@@ -215,6 +217,19 @@ class TrainingSmokeTest(unittest.TestCase):
                     os.environ.pop("MIGRATE_LEGACY_BINARY_LABELS", None)
                 else:
                     os.environ["MIGRATE_LEGACY_BINARY_LABELS"] = previous_override
+
+    def test_legacy_binary_short_sentence_csv_labels_map_to_endpoints(self) -> None:
+        raw_rows = [("很好用", 1), ("很糟糕", 0)]
+        self.assertEqual(_normalize_short_sentence_labels(raw_rows), [("很好用", 5), ("很糟糕", 0)])
+        self.assertEqual(
+            _normalize_bert_short_sentence_labels(raw_rows),
+            [("很好用", 5), ("很糟糕", 0)],
+        )
+
+    def test_score_short_sentence_csv_labels_stay_on_score_scale(self) -> None:
+        raw_rows = [("明显负面", 1), ("极端正面", 5), ("中性", 3)]
+        self.assertEqual(_normalize_short_sentence_labels(raw_rows), raw_rows)
+        self.assertEqual(_normalize_bert_short_sentence_labels(raw_rows), raw_rows)
 
 
 if __name__ == "__main__":
