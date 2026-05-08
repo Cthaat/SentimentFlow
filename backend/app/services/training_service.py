@@ -244,6 +244,7 @@ class _StreamCapture:
         return self
 
     def __exit__(self, *args):
+        self._flush_buffer()
         sys.stdout = self._original_stdout
         self._buffer.close()
 
@@ -252,13 +253,68 @@ class _StreamCapture:
         self._buffer.write(s)
 
         if "\n" in s:
-            self._buffer.seek(0)
-            full_line = self._buffer.read().strip()
-            self._buffer = io.StringIO()
+            self._drain_complete_lines()
 
-            if full_line:
-                self.job.logs.append(full_line)
-                self._update_progress(full_line)
+    @property
+    def encoding(self) -> str | None:
+        return getattr(self._original_stdout, "encoding", None)
+
+    @property
+    def errors(self) -> str | None:
+        return getattr(self._original_stdout, "errors", None)
+
+    @property
+    def closed(self) -> bool:
+        return bool(getattr(self._original_stdout, "closed", False))
+
+    def isatty(self) -> bool:
+        isatty = getattr(self._original_stdout, "isatty", None)
+        return bool(isatty()) if callable(isatty) else False
+
+    def fileno(self) -> int:
+        return self._original_stdout.fileno()
+
+    def writable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return False
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str):
+        return getattr(self._original_stdout, name)
+
+    def _drain_complete_lines(self) -> None:
+        self._buffer.seek(0)
+        content = self._buffer.read()
+        lines = content.splitlines(keepends=True)
+
+        remainder = ""
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            remainder = lines.pop()
+
+        self._buffer = io.StringIO()
+        self._buffer.write(remainder)
+
+        for raw_line in lines:
+            self._append_line(raw_line.strip())
+
+    def _flush_buffer(self) -> None:
+        self._buffer.seek(0)
+        line = self._buffer.read().strip()
+        self._buffer = io.StringIO()
+        self._append_line(line)
+
+    def _append_line(self, line: str) -> None:
+        if line:
+            self.job.logs.append(line)
+            self._update_progress(line)
 
     def _update_progress(self, line: str) -> None:
         if line.startswith("Datasets:"):

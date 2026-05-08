@@ -10,3 +10,9 @@ vocab.txt
 special_tokens_map.json
 training_meta.json
 *.model
+# 排除所有以bert开头的文件夹
+bert_*/
+# 排除所有以gpt开头的文件夹
+gpt_*/
+# 排除所有以lstm开头的文件夹
+lstm_*/

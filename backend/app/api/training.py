@@ -49,11 +49,16 @@ async def stream_progress(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    def status_payload() -> dict:
+        payload = job.to_dict()
+        payload["logs"] = []
+        return payload
+
     async def generate():
         last_log_count = 0
         while job.status in ("pending", "running"):
             # 发送增量更新
-            data = json.dumps(job.to_dict(), ensure_ascii=False)
+            data = json.dumps(status_payload(), ensure_ascii=False)
             yield f"data: {data}\n\n"
 
             # 发送新增的日志行
@@ -63,8 +68,11 @@ async def stream_progress(job_id: str):
             last_log_count = len(job.logs)
             await asyncio.sleep(0.5)
 
-        # 发送最终状态
-        data = json.dumps(job.to_dict(), ensure_ascii=False)
+        # 发送最终增量日志和状态
+        for log_line in job.logs[last_log_count:]:
+            yield f"data: {json.dumps({'type': 'log', 'message': log_line}, ensure_ascii=False)}\n\n"
+
+        data = json.dumps(status_payload(), ensure_ascii=False)
         yield f"data: {data}\n\n"
         yield "data: [DONE]\n\n"
 

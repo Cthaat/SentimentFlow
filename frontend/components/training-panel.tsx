@@ -108,7 +108,7 @@ export function TrainingPanel() {
 
   const appendLog = useCallback((line: string) => {
     setLogLines((prev) => {
-      if (prev[prev.length - 1] === line) return prev;
+      if (prev.includes(line)) return prev;
       return [...prev.slice(-300), line];
     });
   }, []);
