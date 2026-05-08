@@ -11,6 +11,8 @@ class ModelInfo(BaseModel):
     path: str
     size_mb: float | None = None
     best_f1: float | None = None
+    best_mae: float | None = None
+    best_qwk: float | None = None
     best_epoch: int | None = None
 
 

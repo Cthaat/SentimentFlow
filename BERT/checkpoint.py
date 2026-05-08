@@ -17,6 +17,8 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 import torch
 
+from sentiment_scale import NUM_SENTIMENT_CLASSES
+
 from .config import BERT_MODEL_NAME, MAX_LEN
 from .model import SentimentBertModel
 from .text_processing import get_tokenizer
@@ -29,6 +31,7 @@ def save_checkpoint(
     model_name: str,
     best_val_f1: float,
     best_epoch: int,
+    metrics=None,
 ) -> None:
     """保存模型、tokenizer 和元信息。"""
     save_dir = Path(checkpoint_path)
@@ -38,11 +41,23 @@ def save_checkpoint(
     tokenizer = get_tokenizer(model_name)
     tokenizer.save_pretrained(save_dir)
 
+    metric_payload = {}
+    if metrics is not None:
+        metric_payload = {
+            "best_val_weighted_f1": round(float(metrics.weighted_f1), 6),
+            "best_val_mae": round(float(metrics.mae), 6),
+            "best_val_qwk": round(float(metrics.quadratic_weighted_kappa), 6),
+            "confusion_matrix": metrics.confusion_matrix,
+            "support": metrics.support,
+        }
+
     metadata = {
         "max_len": max_len,
         "model_name": model_name,
+        "num_labels": NUM_SENTIMENT_CLASSES,
         "best_val_f1": round(best_val_f1, 6),
         "best_epoch": best_epoch,
+        **metric_payload,
     }
     (save_dir / "training_meta.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
@@ -78,7 +93,7 @@ def load_checkpoint(checkpoint_path: str, device: torch.device):
     except Exception:
         pass
 
-    model = SentimentBertModel(model_name=model_name).to(device)
+    model = SentimentBertModel(model_name=model_name, num_labels=NUM_SENTIMENT_CLASSES).to(device)
     model.backbone = model.backbone.from_pretrained(str(save_dir)).to(device)
     model.eval()
 

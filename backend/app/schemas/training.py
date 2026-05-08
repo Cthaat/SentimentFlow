@@ -28,6 +28,9 @@ class TrainingProgressSchema(BaseModel):
     loss: float | None
     val_acc: float | None
     val_f1: float | None
+    val_weighted_f1: float | None = None
+    val_mae: float | None = None
+    val_qwk: float | None = None
     best_f1: float | None
 
 

@@ -4,16 +4,21 @@
 1. 加载训练配置中的多源数据集。
 2. 使用句号、感叹号、逗号等分割。
 3. 保留 5-20 字的短句（过滤太短/太长）。
-4. 将多源标签统一到二分类（0=负面, 1=正面）。
+4. 将多源标签统一到 0-5 情感评分。
 5. 导出混合后的短句数据集。
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
 from datasets import load_dataset
+
+from sentiment_scale import (
+    LEGACY_BINARY_DATASETS,
+    SENTIMENT_DISPLAY_LABELS,
+    SENTIMENT_SCORES,
+    coerce_sentiment_score,
+)
 
 
 DATASET_NAMES = [
@@ -35,7 +40,7 @@ def extract_short_sentences_from_text(text: str, label: int, min_len: int = 5, m
     
     Args:
         text: 长文本
-        label: 原始标签（0=负, 1=正）
+        label: 0-5 情感评分
         min_len: 最小字数（过滤过短的碎片）
         max_len: 最大字数（保持短句特性）
     
@@ -51,49 +56,6 @@ def extract_short_sentences_from_text(text: str, label: int, min_len: int = 5, m
             result.append((sent, label))
     
     return result
-
-
-def _to_binary_label(raw_label: Any, dataset_name: str, label_col: str) -> int:
-    """将不同来源标签统一为二分类标签。返回 -1 表示应过滤。"""
-    if dataset_name == "BerlinWang/DMSC" and label_col == "Star":
-        try:
-            star = int(raw_label)
-        except (TypeError, ValueError):
-            return -1
-        if star <= 2:
-            return 0
-        if star >= 4:
-            return 1
-        return -1
-
-    if dataset_name == "dirtycomputer/JD_review" and label_col == "rating":
-        try:
-            rating = int(float(raw_label))
-        except (TypeError, ValueError):
-            return -1
-        if rating <= 2:
-            return 0
-        if rating >= 4:
-            return 1
-        return -1
-
-    if isinstance(raw_label, bool):
-        return int(raw_label)
-
-    if isinstance(raw_label, (int, float)):
-        value = int(raw_label)
-        if value in (0, 1):
-            return value
-        if value == -1:
-            return 0
-        return -1
-
-    text = str(raw_label).strip().lower()
-    if text in {"1", "pos", "positive", "正面", "好评"}:
-        return 1
-    if text in {"0", "-1", "neg", "negative", "负面", "差评"}:
-        return 0
-    return -1
 
 
 def _resolve_split_and_columns(ds_name: str):
@@ -123,6 +85,27 @@ def _resolve_split_and_columns(ds_name: str):
     return split_name, split, text_col, label_col
 
 
+def _should_migrate_legacy_binary(split, label_col: str, ds_name: str) -> bool:
+    """判断原始数据集标签是否是旧二分类 0/1。"""
+    if ds_name in LEGACY_BINARY_DATASETS:
+        return True
+    try:
+        raw_values = split.unique(label_col)
+    except Exception:
+        return False
+
+    values: set[int] = set()
+    for raw_value in raw_values:
+        try:
+            number = float(raw_value)
+        except (TypeError, ValueError):
+            return False
+        if not number.is_integer():
+            return False
+        values.add(int(number))
+    return bool(values) and values.issubset({0, 1})
+
+
 def _extract_from_dataset(ds_name: str) -> list[tuple[str, int]]:
     """从单个数据集提取短句。"""
     split_name, split, text_col, label_col = _resolve_split_and_columns(ds_name)
@@ -130,13 +113,19 @@ def _extract_from_dataset(ds_name: str) -> list[tuple[str, int]]:
 
     extracted: list[tuple[str, int]] = []
     skipped_labels = 0
+    legacy_binary = _should_migrate_legacy_binary(split, label_col, ds_name)
     for item in split:
         text = str(item.get(text_col) or "").strip()
         if not text:
             continue
 
-        label = _to_binary_label(item.get(label_col), ds_name, label_col)
-        if label not in (0, 1):
+        label = coerce_sentiment_score(
+            item.get(label_col),
+            ds_name,
+            label_col,
+            legacy_binary=legacy_binary,
+        )
+        if label not in SENTIMENT_SCORES:
             skipped_labels += 1
             continue
 
@@ -165,10 +154,8 @@ def process_dataset():
     print(f"\nExtracted {len(short_sentences)} short sentences in total")
     
     # 统计
-    pos_count = sum(1 for _, label in short_sentences if label == 1)
-    neg_count = sum(1 for _, label in short_sentences if label == 0)
-    print(f"  Positive: {pos_count}")
-    print(f"  Negative: {neg_count}")
+    score_counts = {score: sum(1 for _, label in short_sentences if label == score) for score in SENTIMENT_SCORES}
+    print(f"  Score counts: {score_counts}")
     
     # 保存为CSV
     df = pd.DataFrame(short_sentences, columns=['text', 'label'])
@@ -180,7 +167,7 @@ def process_dataset():
     # 显示样本
     print("\nSample short sentences:")
     for text, label in short_sentences[:10]:
-        label_str = "正面" if label == 1 else "负面"
+        label_str = SENTIMENT_DISPLAY_LABELS[int(label)]
         print(f"  [{label_str}] {text}")
 
 

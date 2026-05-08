@@ -23,10 +23,18 @@ class PredictResponse(BaseModel):
 	"""
 	# 原始输入文本。
 	text: str
-	# 情感标签：通常为“正面/负面/中性”。
+	# 情感评分：0=极端负面，5=极端正面。
+	score: int = Field(..., ge=0, le=5)
+	# 机器可读情感标签，如 extremely_negative / neutral。
 	label: str
+	# 中文展示标签。
+	label_zh: str
 	# 置信分数：范围通常在 0 到 1。
-	score: float
+	confidence: float = Field(..., ge=0.0, le=1.0)
+	# 6 个评分类别的概率，索引即 score。
+	probabilities: list[float]
+	# 简短可解释说明。
+	reasoning: str
 	# 结果来源：用于区分基线规则或模型推理。
 	source: str
 	# 模型名称：当前使用的模型标识（如 lstm_20260429_143025）。

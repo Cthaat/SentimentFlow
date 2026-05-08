@@ -3,7 +3,18 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Tuple
+from pathlib import Path
+from typing import Dict
+
+from sentiment_scale import (
+    LEGACY_BINARY_DATASETS,
+    NUM_SENTIMENT_CLASSES,
+    SENTIMENT_SCORES,
+    choose_score_from_binary_teacher_probabilities,
+    coerce_sentiment_score,
+    parse_label_map,
+    validate_sentiment_score,
+)
 
 
 # 数据集别名映射表：将简短/易记的名称映射到 HuggingFace Hub 上的实际 repo 路径
@@ -15,6 +26,15 @@ DATASET_ALIASES = {
     "nlpcc_sentiment": "ndiy/NLPCC14-SC",
     "hotel_reviews_sentiment": "dirtycomputer/ChnSentiCorp_htl_all",
     "simplified_weibo_sentiment": "dirtycomputer/weibo_senti_100k",
+}
+
+META_COLUMNS = {
+    "text",
+    "label",
+    "_sf_is_legacy_binary",
+    "_sf_binary_label",
+    "_sf_label_source",
+    "_sf_teacher_confidence",
 }
 
 
@@ -33,68 +53,50 @@ def _resolve_dataset_name(dataset_name: str) -> str:
     return alias or dataset_name
 
 
-def _coerce_binary_label(raw_label, dataset_name: str, label_col: str) -> int:
-    """将各数据集的原始标签统一转换为二分类标签 0/1。
+def _should_migrate_legacy_binary(split, label_col: str, dataset_name: str) -> bool:
+    """自动识别旧 0/1 数据并迁移为 0/5，避免破坏真实 0-5 数据。"""
+    override = os.getenv("MIGRATE_LEGACY_BINARY_LABELS", "auto").strip().lower()
+    if override in {"1", "true", "yes"}:
+        return True
+    if override in {"0", "false", "no"}:
+        return False
+    if dataset_name in LEGACY_BINARY_DATASETS:
+        return True
 
-    针对不同数据集的标签体系做专项处理：
-    - BerlinWang/DMSC：星级评分（Star），1-2 → 负面(0)，4-5 → 正面(1)，3 → 跳过(-1)
-    - dirtycomputer/JD_review：评分（rating），同上规则
-    - 布尔值：True → 1，False → 0
-    - 整数/浮点数：仅接受 0/1/-1（-1 映射为 0）
-    - 字符串：支持 pos/positive/正面/好评 等关键词
+    try:
+        raw_values = split.unique(label_col)
+    except Exception:
+        return False
 
-    Args:
-        raw_label: 原始标签值，类型不限。
-        dataset_name: 数据集的标准名称，用于区分专项规则。
-        label_col: 标签所在的列名，用于区分同一数据集下的不同列。
-
-    Returns:
-        0（负面）、1（正面）或 -1（无效/中性，应跳过）。
-    """
-    # 针对 DMSC 电影评分数据集：通过星级判断情感极性
-    if dataset_name == "BerlinWang/DMSC" and label_col == "Star":
+    values: set[int] = set()
+    for raw_value in raw_values:
         try:
-            star = int(raw_label)
+            number = float(raw_value)
         except (TypeError, ValueError):
-            return -1
-        if star <= 2:
-            return 0  # 1-2 星：负面
-        if star >= 4:
-            return 1  # 4-5 星：正面
-        return -1     # 3 星：中性，跳过
+            return False
+        if not number.is_integer():
+            return False
+        values.add(int(number))
+    return bool(values) and values.issubset({0, 1})
 
-    # 针对京东评论数据集：通过评分判断情感极性
-    if dataset_name == "dirtycomputer/JD_review" and label_col == "rating":
-        try:
-            rating = int(float(raw_label))
-        except (TypeError, ValueError):
-            return -1
-        if rating <= 2:
-            return 0  # 1-2 分：负面
-        if rating >= 4:
-            return 1  # 4-5 分：正面
-        return -1     # 3 分：中性，跳过
 
-    # 布尔类型直接转换
-    if isinstance(raw_label, bool):
-        return int(raw_label)
-
-    # 数值类型：仅接受 0/1/-1，其余视为无效
-    if isinstance(raw_label, (int, float)):
-        value = int(raw_label)
-        if value in (0, 1):
-            return value
-        if value == -1:
-            return 0  # 部分数据集用 -1 表示负面
+def _parse_binary_label(value) -> int:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
         return -1
+    if not number.is_integer():
+        return -1
+    int_value = int(number)
+    return int_value if int_value in (0, 1) else -1
 
-    # 字符串类型：匹配常见的情感关键词
-    text = str(raw_label).strip().lower()
-    if text in {"1", "pos", "positive", "正面", "好评"}:
-        return 1
-    if text in {"0", "-1", "neg", "negative", "负面", "差评"}:
-        return 0
-    return -1
+
+def _project_standard_columns(split):
+    keep_columns = [column for column in split.column_names if column in META_COLUMNS]
+    remove_columns = [column for column in split.column_names if column not in keep_columns]
+    if remove_columns:
+        split = split.remove_columns(remove_columns)
+    return split
 
 
 def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = False):
@@ -106,9 +108,9 @@ def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = Fa
 
     Args:
         split: HuggingFace Dataset 的一个分割（train/val/test）。
-        dataset_name: 数据集标准名称，传递给 _coerce_binary_label 使用。
+        dataset_name: 数据集标准名称，传递给通用标签转换逻辑使用。
         preserve_label: 若为 True，则保留原始整数标签（用于后续显式映射）；
-                        否则直接通过 _coerce_binary_label 将标签转为 0/1/-1。
+                        否则直接通过通用标签转换逻辑将标签转为 0-5/-1。
 
     Returns:
         仅含 "text" 和 "label" 列、标签已过滤合法的 HuggingFace Dataset。
@@ -116,18 +118,33 @@ def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = Fa
     columns = set(split.column_names)
 
     if "text" in columns and "label" in columns:
+        legacy_binary = _should_migrate_legacy_binary(split, "label", dataset_name)
         # 数据集已有标准列名，仅做类型强制转换
         def cast_existing(row, ds_name=dataset_name, keep_raw=preserve_label):
+            raw_label = row.get("label")
+            binary_label = _parse_binary_label(raw_label) if legacy_binary else -1
             row_copy = dict(row)
             row_copy["text"] = str(row.get("text") or "")
+            row_copy["_sf_is_legacy_binary"] = legacy_binary and binary_label in (0, 1)
+            row_copy["_sf_binary_label"] = binary_label
+            row_copy["_sf_teacher_confidence"] = -1.0
             if keep_raw:
                 # 保留原始整数标签，以便后续 label_map 映射
                 try:
-                    row_copy["label"] = int(row.get("label"))
+                    row_copy["label"] = int(raw_label)
                 except (TypeError, ValueError):
                     row_copy["label"] = -1
+                row_copy["_sf_label_source"] = "raw_preserved"
             else:
-                row_copy["label"] = _coerce_binary_label(row.get("label"), ds_name, "label")
+                row_copy["label"] = coerce_sentiment_score(
+                    raw_label,
+                    dataset_name=ds_name,
+                    label_col="label",
+                    legacy_binary=legacy_binary,
+                )
+                row_copy["_sf_label_source"] = (
+                    "weak_binary_endpoint" if row_copy["_sf_is_legacy_binary"] else "normalized"
+                )
             return row_copy
 
         split = split.map(cast_existing)
@@ -145,84 +162,227 @@ def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = Fa
                 f"Missing text/label columns in {sorted(columns)}"
             )
 
+        legacy_binary = _should_migrate_legacy_binary(split, label_col, dataset_name)
+
         def normalize_row(row, ds_name=dataset_name, t_col=text_col, l_col=label_col, keep_raw=preserve_label):
+            raw_label = row.get(l_col)
+            binary_label = _parse_binary_label(raw_label) if legacy_binary else -1
             row_copy = dict(row)
             row_copy["text"] = str(row.get(t_col) or "")
+            row_copy["_sf_is_legacy_binary"] = legacy_binary and binary_label in (0, 1)
+            row_copy["_sf_binary_label"] = binary_label
+            row_copy["_sf_teacher_confidence"] = -1.0
             if keep_raw:
                 try:
-                    row_copy["label"] = int(row.get(l_col))
+                    row_copy["label"] = int(raw_label)
                 except (TypeError, ValueError):
                     row_copy["label"] = -1
+                row_copy["_sf_label_source"] = "raw_preserved"
             else:
-                row_copy["label"] = _coerce_binary_label(row.get(l_col), ds_name, l_col)
+                row_copy["label"] = coerce_sentiment_score(
+                    raw_label,
+                    dataset_name=ds_name,
+                    label_col=l_col,
+                    legacy_binary=legacy_binary,
+                )
+                row_copy["_sf_label_source"] = (
+                    "weak_binary_endpoint" if row_copy["_sf_is_legacy_binary"] else "normalized"
+                )
             return row_copy
 
         split = split.map(normalize_row)
 
-    # 过滤无效标签：preserve_label 模式下保留 >=0 的标签，否则仅保留 0/1
+    # 过滤无效标签：preserve_label 模式下保留 >=0 的标签，否则仅保留 0-5
     before = len(split)
     if preserve_label:
         split = split.filter(lambda row: int(row["label"]) >= 0)
     else:
-        split = split.filter(lambda row: int(row["label"]) in (0, 1))
+        split = split.filter(lambda row: int(row["label"]) in SENTIMENT_SCORES)
     after = len(split)
     if after < before:
         print(f"After schema/label cleanup for {dataset_name}: {after}/{before}")
-    return split
+    return _project_standard_columns(split)
 
 
-def _force_balance_binary_split(split, dataset_name: str, split_name: str, seed: int = 42):
-    """对二分类数据集进行强制正负样本均衡处理（下采样至少数类数量）。
+def _force_balance_score_split(split, dataset_name: str, split_name: str, seed: int = 42):
+    """对 0-5 评分数据集按存在的类别做下采样均衡。"""
+    class_splits = {
+        score: split.filter(lambda row, s=score: int(row["label"]) == s)
+        for score in SENTIMENT_SCORES
+    }
+    class_counts = {score: len(class_split) for score, class_split in class_splits.items()}
+    present_counts = [count for count in class_counts.values() if count > 0]
 
-    若某一类别为空，则跳过均衡并打印警告，避免产生空数据集。
-    均衡后数据集会重新随机打乱，确保正负样本均匀分布。
-
-    Args:
-        split: 需要均衡的 HuggingFace Dataset 分割。
-        dataset_name: 数据集名称，仅用于日志输出。
-        split_name: 分割名称（如 "train"/"val"），仅用于日志输出。
-        seed: 随机种子，用于 shuffle 和 select，保证可复现性。
-
-    Returns:
-        正负样本数量相等的 HuggingFace Dataset。
-    """
-    neg_split = split.filter(lambda row: int(row["label"]) == 0)
-    pos_split = split.filter(lambda row: int(row["label"]) == 1)
-
-    neg_count = len(neg_split)
-    pos_count = len(pos_split)
-    # 取两类中数量较少的一方作为均衡目标数
-    min_count = min(neg_count, pos_count)
-
-    # 若有某一类为空则无法均衡，直接返回原数据并警告
-    if min_count == 0:
+    if len(present_counts) < 2:
         print(
             f"Warning: Skip force-balance for {dataset_name} {split_name} "
-            f"because one class is empty (neg={neg_count}, pos={pos_count})."
+            f"because fewer than two score classes are present: {class_counts}."
         )
         return split
 
-    # 对多数类进行下采样，使两类数量一致
-    neg_split = neg_split.shuffle(seed=seed).select(range(min_count))
-    pos_split = pos_split.shuffle(seed=seed).select(range(min_count))
-
+    min_count = min(present_counts)
     from datasets import concatenate_datasets
 
-    # 合并后再次打乱，避免正负样本成块出现
-    balanced = concatenate_datasets([neg_split, pos_split]).shuffle(seed=seed)
+    balanced_parts = [
+        class_split.shuffle(seed=seed + score).select(range(min_count))
+        for score, class_split in class_splits.items()
+        if len(class_split) > 0
+    ]
+    balanced = concatenate_datasets(balanced_parts).shuffle(seed=seed)
     print(
         f"Force-balanced {dataset_name} {split_name}: "
-        f"neg={min_count}, pos={min_count}, total={len(balanced)} "
-        f"(from neg={neg_count}, pos={pos_count})"
+        f"per_class={class_counts}, kept_per_present_class={min_count}, total={len(balanced)}"
     )
     return balanced
+
+
+def _semi_supervised_enabled() -> bool:
+    raw = os.getenv("SEMI_SUPERVISED_01_TO_05", "auto").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _get_teacher_path() -> str:
+    return (
+        os.getenv("BERT_PSEUDO_LABEL_TEACHER_PATH", "").strip()
+        or os.getenv("PSEUDO_LABEL_TEACHER_PATH", "").strip()
+        or os.getenv("BERT_CHECKPOINT_PATH", "").strip()
+    )
+
+
+def _has_legacy_binary_rows(split) -> bool:
+    return (
+        "_sf_is_legacy_binary" in split.column_names
+        and any(bool(value) for value in split["_sf_is_legacy_binary"])
+    )
+
+
+def _infer_teacher_num_labels(teacher) -> int:
+    backbone = getattr(teacher, "backbone", teacher)
+    config_num_labels = int(getattr(getattr(backbone, "config", None), "num_labels", 0) or 0)
+    if config_num_labels:
+        return config_num_labels
+    classifier = getattr(backbone, "classifier", None)
+    if classifier is not None:
+        out_features = getattr(classifier, "out_features", None)
+        if out_features is not None:
+            return int(out_features)
+        out_proj = getattr(classifier, "out_proj", None)
+        if out_proj is not None and getattr(out_proj, "out_features", None) is not None:
+            return int(out_proj.out_features)
+    return 0
+
+
+def _maybe_apply_semi_supervised_binary_refinement(split, dataset_name: str, split_name: str):
+    """Use an existing 6-class BERT teacher to split weak 0/1 labels into 0-5."""
+    if not _semi_supervised_enabled() or not _has_legacy_binary_rows(split):
+        return split
+
+    teacher_path = _get_teacher_path()
+    if not teacher_path:
+        print(
+            f"Semi-supervised 0/1->0-5 skipped for {dataset_name} {split_name}: "
+            "BERT_PSEUDO_LABEL_TEACHER_PATH is not set."
+        )
+        return split
+
+    checkpoint_path = Path(teacher_path)
+    if not checkpoint_path.exists():
+        print(
+            f"Semi-supervised 0/1->0-5 skipped for {dataset_name} {split_name}: "
+            f"teacher checkpoint not found: {checkpoint_path}"
+        )
+        return split
+
+    try:
+        import torch
+        from transformers import AutoTokenizer
+
+        from .checkpoint import load_checkpoint
+        from .config import MAX_LEN
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        teacher = load_checkpoint(str(checkpoint_path), device=device)
+        if teacher is None:
+            return split
+        if _infer_teacher_num_labels(teacher) != NUM_SENTIMENT_CLASSES:
+            print(
+                f"Semi-supervised 0/1->0-5 skipped for {dataset_name} {split_name}: "
+                "teacher is not a 6-class checkpoint."
+            )
+            return split
+
+        tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_path))
+        min_confidence = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.45"))
+        fallback_to_endpoint = os.getenv("PSEUDO_LABEL_FALLBACK_TO_ENDPOINT", "1") == "1"
+        batch_size = max(1, int(os.getenv("PSEUDO_LABEL_BATCH_SIZE", "64")))
+        teacher.eval()
+
+        def refine_batch(batch):
+            labels = [int(value) for value in batch["label"]]
+            sources = list(batch["_sf_label_source"])
+            confidences = [float(value) for value in batch["_sf_teacher_confidence"]]
+
+            legacy_indices = [
+                index for index, flag in enumerate(batch["_sf_is_legacy_binary"])
+                if bool(flag)
+            ]
+            if legacy_indices:
+                texts = [str(batch["text"][index]) for index in legacy_indices]
+                encoded = tokenizer(
+                    texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=MAX_LEN,
+                    return_tensors="pt",
+                )
+                input_ids = encoded["input_ids"].to(device, non_blocking=True)
+                attention_mask = encoded["attention_mask"].to(device, non_blocking=True)
+                with torch.inference_mode():
+                    probabilities = torch.softmax(
+                        teacher(input_ids=input_ids, attention_mask=attention_mask),
+                        dim=1,
+                    ).detach().cpu().tolist()
+
+                for offset, row_index in enumerate(legacy_indices):
+                    choice = choose_score_from_binary_teacher_probabilities(
+                        probabilities[offset],
+                        int(batch["_sf_binary_label"][row_index]),
+                        min_confidence=min_confidence,
+                        fallback_to_endpoint=fallback_to_endpoint,
+                    )
+                    labels[row_index] = int(choice["score"])
+                    sources[row_index] = str(choice["source"])
+                    confidences[row_index] = round(float(choice["confidence"]), 6)
+
+            batch["label"] = labels
+            batch["_sf_label_source"] = sources
+            batch["_sf_teacher_confidence"] = confidences
+            return batch
+
+        before = len(split)
+        split = split.map(refine_batch, batched=True, batch_size=batch_size)
+        split = split.filter(lambda row: int(row["label"]) in SENTIMENT_SCORES)
+        accepted = sum(1 for source in split["_sf_label_source"] if source == "pseudo_teacher")
+        fallback = sum(1 for source in split["_sf_label_source"] if source == "weak_binary_endpoint")
+        print(
+            f"Semi-supervised 0/1->0-5 for {dataset_name} {split_name}: "
+            f"rows={len(split)}/{before}, pseudo={accepted}, fallback={fallback}, "
+            f"teacher={checkpoint_path}"
+        )
+        return split
+    except Exception as exc:
+        print(
+            f"Warning: semi-supervised 0/1->0-5 failed for {dataset_name} {split_name}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return split
 
 
 def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
     """将环境变量中的标签映射字符串解析为 {原始标签: 目标标签} 字典。
 
     期望格式为逗号分隔的 "src:dst" 对，例如 "1:0,2:0,3:-1,4:1"。
-    目标标签只能为 -1（跳过）、0（负面）或 1（正面）。
+    目标标签只能为 -1（跳过）或 0-5 情感评分。
 
     Args:
         raw: 从环境变量读取的原始字符串。
@@ -231,55 +391,35 @@ def _parse_label_map_from_env(raw: str) -> Dict[int, int]:
         解析后的整数到整数映射字典。
 
     Raises:
-        ValueError: 格式错误或目标标签超出 {-1, 0, 1} 范围。
+        ValueError: 格式错误或目标标签超出 {-1, 0, 1, 2, 3, 4, 5} 范围。
     """
-    mapping: Dict[int, int] = {}
-    for item in raw.split(","):
-        pair = item.strip()
-        if not pair:
-            continue
-        if ":" not in pair:
-            raise ValueError(
-                f"Invalid label map item '{pair}'. Expected format like '0:1'."
-            )
-        src, dst = pair.split(":", 1)
-        src_label = int(src.strip())
-        dst_label = int(dst.strip())
-        # 目标标签只允许 -1/0/1
-        if dst_label not in (-1, 0, 1):
-            raise ValueError(
-                f"Invalid target label {dst_label} in '{pair}'. Expected -1, 0 or 1."
-            )
-        mapping[src_label] = dst_label
-    if not mapping:
-        raise ValueError("Parsed empty label map from environment variable.")
-    return mapping
+    return parse_label_map(raw)
 
 
 def get_label_map(dataset_name: str) -> Dict[int, int] | None:
     """根据数据集名称返回对应的标签映射字典，或 None（无需映射）。
 
     目前支持：
-    - ttxy/online_shopping_10_cats：10 分类映射到二分类，可通过环境变量覆盖默认映射。
-    - dirtycomputer/simplifyweibo_4_moods：4 种情绪映射到二分类，可通过环境变量覆盖。
+    - ttxy/online_shopping_10_cats：10 分类映射到 0-5，可通过环境变量覆盖默认映射。
+    - dirtycomputer/simplifyweibo_4_moods：4 种情绪映射到 0-5，可通过环境变量覆盖。
 
     Args:
         dataset_name: 数据集标准名称。
 
     Returns:
-        {原始整数标签: 目标标签} 字典，目标标签为 0/1/-1；
+        {原始整数标签: 目标标签} 字典，目标标签为 0-5/-1；
         若该数据集无需额外映射则返回 None。
     """
     if dataset_name == "ttxy/online_shopping_10_cats":
-        # 默认：类别 1-4 映射为负面(0)，5-6 跳过，7-10 映射为正面(1)
+        # 默认：10 档评分线性映射到 0-5。
         raw_map = os.getenv(
             "TTXY_ONLINE_SHOPPING_10_CATS_LABEL_MAP",
-            "1:0,2:0,3:0,4:0,5:-1,6:-1,7:1,8:1,9:1,10:1",
+            "1:0,2:1,3:1,4:2,5:2,6:3,7:3,8:4,9:4,10:5",
         )
         return _parse_label_map_from_env(raw_map)
     if dataset_name == "dirtycomputer/simplifyweibo_4_moods":
-        # 默认：0→正面(1)，1→负面(0)，2/3→跳过(-1)
-        raw_map = os.getenv("SIMPLIFYWEIBO_4_MOODS_LABEL_MAP", "0:1,1:0,2:-1,3:-1")
+        # 默认：0→极端正面(5)，1→极端负面(0)，2/3→跳过(-1)
+        raw_map = os.getenv("SIMPLIFYWEIBO_4_MOODS_LABEL_MAP", "0:5,1:0,2:-1,3:-1")
         return _parse_label_map_from_env(raw_map)
     return None
 
@@ -291,7 +431,7 @@ def build_train_split_and_val_split():
     1. 读取 BERT_TRAIN_DATASETS 环境变量，解析数据集名称列表（支持别名）。
     2. 逐个加载数据集，自动处理 validation/test split 不存在的情况。
     3. 规范化列名与标签格式，应用数据集专属的 label_map。
-    4. 对 DMSC 等数据集进行强制正负均衡。
+    4. 对 DMSC 等数据集按存在的 0-5 评分档位进行强制均衡。
     5. 合并所有数据集，全局随机打乱，按环境变量限制样本上限。
     6. 可选：混入人工提取的短句数据（extracted_short_sentences.csv）。
     7. 可选：混入合成短句数据（USE_SYNTHETIC_DATA=1）。
@@ -325,7 +465,7 @@ def build_train_split_and_val_split():
         item.strip()
         for item in os.getenv(
             "BERT_TRAIN_DATASETS",
-            "lansinuote/ChnSentiCorp,XiangPan/waimai_10k",
+            "lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/JD_review,BerlinWang/DMSC",
         ).split(",")
         if item.strip()
     ]
@@ -349,13 +489,18 @@ def build_train_split_and_val_split():
             print(
                 "Skip dataset dirtycomputer/simplifyweibo_4_moods: "
                 "4-class mood dataset is disabled by default. "
-                "Use dirtycomputer/weibo_senti_100k for binary sentiment, "
+                "Use dirtycomputer/weibo_senti_100k for legacy binary sentiment, "
                 "or set ALLOW_SIMPLIFYWEIBO_4_MOODS=1 to force-enable."
             )
             continue
 
+        dataset_path = Path(raw_name).expanduser()
         try:
-            ds = load_dataset(name)
+            if dataset_path.exists() and dataset_path.suffix.lower() == ".csv":
+                name = str(dataset_path.resolve())
+                ds = load_dataset("csv", data_files={"train": name})
+            else:
+                ds = load_dataset(name)
         except Exception as e:
             print(f"Warning: Failed to load dataset '{raw_name}' (resolved '{name}'): {e}")
             continue
@@ -363,7 +508,7 @@ def build_train_split_and_val_split():
         if "train" not in ds:
             raise ValueError(f"Dataset {name} has no train split.")
 
-        # 获取该数据集的专属标签映射（如多分类转二分类）
+        # 获取该数据集的专属标签映射（如多分类转 0-5）
         current_label_map = get_label_map(name)
         if current_label_map:
             label_map = current_label_map
@@ -398,6 +543,7 @@ def build_train_split_and_val_split():
             def apply_mapping(row, mapping=current_label_map):
                 row_copy = dict(row)
                 row_copy["label"] = mapping.get(int(row["label"]), -1)
+                row_copy["_sf_label_source"] = "label_map" if row_copy["label"] != -1 else "mapped_skip"
                 return row_copy
 
             train_part = train_part.map(apply_mapping)
@@ -405,17 +551,27 @@ def build_train_split_and_val_split():
 
             train_before = len(train_part)
             val_before = len(val_part)
-            train_part = train_part.filter(lambda row: int(row["label"]) in (0, 1))
-            val_part = val_part.filter(lambda row: int(row["label"]) in (0, 1))
+            train_part = train_part.filter(lambda row: int(row["label"]) in SENTIMENT_SCORES)
+            val_part = val_part.filter(lambda row: int(row["label"]) in SENTIMENT_SCORES)
             print(
                 f"After mapping filter for {name}: "
                 f"train {len(train_part)}/{train_before}, val {len(val_part)}/{val_before}"
             )
 
+        train_part = _maybe_apply_semi_supervised_binary_refinement(train_part, name, "train")
+        if os.getenv("PSEUDO_LABEL_VALIDATION_SPLIT", "0") == "1":
+            val_part = _maybe_apply_semi_supervised_binary_refinement(val_part, name, "val")
+
         # DMSC 星级分布不均，对训练集和验证集分别做强制均衡
         if name == "BerlinWang/DMSC":
-            train_part = _force_balance_binary_split(train_part, name, "train", seed=42)
-            val_part = _force_balance_binary_split(val_part, name, "val", seed=43)
+            train_part = _force_balance_score_split(train_part, name, "train", seed=42)
+            val_part = _force_balance_score_split(val_part, name, "val", seed=43)
+
+        print(
+            f"Dataset ready: {name} "
+            f"train_score_counts={get_label_distribution(train_part)}, "
+            f"val_score_counts={get_label_distribution(val_part)}"
+        )
 
         train_splits.append(train_part)
         val_splits.append(val_part)
@@ -450,8 +606,6 @@ def build_train_split_and_val_split():
     # 可选：混入人工提取的短句数据，以提升模型对短文本的泛化能力
     if os.getenv("USE_EXTRACTED_SHORT_SENTENCES", "1") == "1":
         try:
-            from pathlib import Path
-
             csv_path = Path(__file__).resolve().parent / "extracted_short_sentences.csv"
 
             if csv_path.exists():
@@ -473,9 +627,10 @@ def build_train_split_and_val_split():
                             label_str = line[last_comma + 1 :]
                             try:
                                 label = int(label_str)
-                                if label in (0, 1):
+                                score = validate_sentiment_score(label)
+                                if score in SENTIMENT_SCORES:
                                     short_texts.append(text)
-                                    short_labels.append(label)
+                                    short_labels.append(score)
                             except ValueError:
                                 continue
 
@@ -501,9 +656,8 @@ def build_train_split_and_val_split():
                     if short_samples_to_use > 0:
                         short_sentences_ds = short_sentences_ds.select(range(short_samples_to_use))
                         train_split = concatenate_datasets([train_split, short_sentences_ds])
-                        neg_short = sum(1 for l in short_labels[:short_samples_to_use] if l == 0)
-                        pos_short = sum(1 for l in short_labels[:short_samples_to_use] if l == 1)
-                        print(f"Added {len(short_sentences_ds)} extracted short sentences (neg={neg_short}, pos={pos_short}).")
+                        short_counts = get_label_distribution(short_sentences_ds)
+                        print(f"Added {len(short_sentences_ds)} extracted short sentences (score_counts={short_counts}).")
                         print(f"  New train size: {len(train_split)} (long:short = {100 * (1 - short_ratio):.0f}%:{100 * short_ratio:.0f}%)")
                 else:
                     print("Warning: No valid short sentences found in CSV")
@@ -529,17 +683,19 @@ def build_train_split_and_val_split():
     return loaded_dataset_names, train_split, val_split, None
 
 
-def get_label_distribution(split, label_map: dict | None = None) -> Tuple[int, int]:
-    """统计数据集分割中正负样本的数量分布。
+def get_label_distribution(split, label_map: dict | None = None) -> list[int]:
+    """统计数据集分割中 0-5 评分样本的数量分布。
 
     Args:
         split: HuggingFace Dataset 分割，须包含整数类型的 "label" 列。
         label_map: 预留参数，当前未使用（保留以兼容未来扩展）。
 
     Returns:
-        (neg_count, pos_count) 二元组，分别为负面（label=0）和正面（label=1）样本数量。
+        长度为 6 的列表，索引即评分。
     """
+    counts = [0 for _ in range(NUM_SENTIMENT_CLASSES)]
     labels = split["label"]
-    neg = sum(1 for x in labels if int(x) == 0)
-    pos = sum(1 for x in labels if int(x) == 1)
-    return neg, pos
+    for label in labels:
+        score = validate_sentiment_score(int(label))
+        counts[score] += 1
+    return counts

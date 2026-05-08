@@ -78,6 +78,8 @@ def _scan_models() -> list[dict[str, Any]]:
             "path": str(entry),
             "size_mb": _dir_size_mb(entry),
             "best_f1": meta.get("best_val_f1"),
+            "best_mae": meta.get("best_val_mae"),
+            "best_qwk": meta.get("best_val_qwk"),
             "best_epoch": meta.get("best_epoch"),
         })
 
@@ -96,6 +98,8 @@ def list_models():
             path=m["path"],
             size_mb=m.get("size_mb"),
             best_f1=m.get("best_f1"),
+            best_mae=m.get("best_mae"),
+            best_qwk=m.get("best_qwk"),
             best_epoch=m.get("best_epoch"),
         )
         for m in models

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
 import torch
 from torch.utils.data import IterableDataset
+
+from sentiment_scale import LEGACY_BINARY_TO_SCORE, validate_sentiment_score
 
 
 class CsvStreamDataset(IterableDataset):
@@ -18,19 +21,27 @@ class CsvStreamDataset(IterableDataset):
     这样可以一次性处理整个 batch 的数据，避免逐条 tokenizer 调用的性能灾难。
     """
 
-    def __init__(self, source, chunk_size: int, label_map: dict | None = None):
+    def __init__(
+        self,
+        source,
+        chunk_size: int,
+        label_map: dict | None = None,
+        labels_are_normalized: bool = False,
+    ):
         """初始化数据集。
 
         Args:
             source: 数据来源，可以是 CSV 文件路径（str/Path）或支持下标访问的数据集对象。
             chunk_size: 每次从 CSV 分块读取的行数，用于控制内存占用。
-            label_map: 可选的标签映射字典，将原始标签整数映射到目标标签（0/1/-1）。
+            label_map: 可选的标签映射字典，将原始标签整数映射到目标评分（0-5/-1）。
                        -1 表示跳过该样本；为 None 时不做映射。
         """
         super().__init__()
         self.source = source
         self.chunk_size = chunk_size
         self.label_map = label_map or {}
+        self.labels_are_normalized = labels_are_normalized
+        self._csv_legacy_binary_cache: dict[str, bool] = {}
 
     @staticmethod
     def _parse_label(value):
@@ -134,6 +145,52 @@ class CsvStreamDataset(IterableDataset):
         if buffer_texts:
             yield pd.DataFrame({"text": buffer_texts, "label": buffer_labels})
 
+    def _detect_csv_legacy_binary(self, csv_path: Path) -> bool:
+        """整份 CSV 级别判断是否为旧 0/1 标签，避免按 chunk 误判。"""
+        if self.labels_are_normalized or self.label_map:
+            return False
+
+        override = os.getenv("MIGRATE_LEGACY_BINARY_LABELS", "auto").strip().lower()
+        if override in {"1", "true", "yes"}:
+            return True
+        if override in {"0", "false", "no"}:
+            return False
+
+        cache_key = str(csv_path.resolve())
+        if cache_key in self._csv_legacy_binary_cache:
+            return self._csv_legacy_binary_cache[cache_key]
+
+        values: set[int] = set()
+        chunk_reader = None
+        try:
+            chunk_reader = pd.read_csv(
+                csv_path,
+                usecols=["label"],
+                dtype={"label": "int16"},
+                chunksize=self.chunk_size,
+            )
+            for chunk in chunk_reader:
+                for raw_label in chunk["label"].dropna().tolist():
+                    label = int(raw_label)
+                    values.add(label)
+                    if label not in LEGACY_BINARY_TO_SCORE:
+                        self._csv_legacy_binary_cache[cache_key] = False
+                        return False
+        except Exception:
+            values.clear()
+            for _, label in self._iter_fallback_csv_rows(csv_path):
+                values.add(int(label))
+                if int(label) not in LEGACY_BINARY_TO_SCORE:
+                    self._csv_legacy_binary_cache[cache_key] = False
+                    return False
+        finally:
+            if chunk_reader is not None:
+                chunk_reader.close()
+
+        result = bool(values) and values.issubset(set(LEGACY_BINARY_TO_SCORE))
+        self._csv_legacy_binary_cache[cache_key] = result
+        return result
+
     def __iter__(self):
         """迭代数据集，按 worker 分片后逐样本 yield (text, label)。
 
@@ -144,7 +201,7 @@ class CsvStreamDataset(IterableDataset):
 
         标签映射规则：
         - 若 label_map 中对应值为 -1，则跳过该样本。
-        - 映射后的标签必须为 0 或 1，否则抛出 ValueError。
+        - 映射后的标签必须为 0-5，否则抛出 ValueError。
 
         Yields:
             (text, mapped_label) 二元组。
@@ -157,6 +214,7 @@ class CsvStreamDataset(IterableDataset):
         if isinstance(self.source, (str, Path)):
             # ---- CSV 文件数据源 ----
             csv_path = Path(self.source)
+            legacy_binary_source = self._detect_csv_legacy_binary(csv_path)
             for chunk_index, chunk in enumerate(self._iter_csv_chunks(csv_path)):
                 # 按 worker id 对 chunk 编号取模，实现多 worker 分片
                 if chunk_index % num_workers != worker_id:
@@ -171,6 +229,8 @@ class CsvStreamDataset(IterableDataset):
                     # 应用标签映射（若存在）
                     if self.label_map and label in self.label_map:
                         mapped_label = self.label_map[label]
+                    elif legacy_binary_source and int(label) in LEGACY_BINARY_TO_SCORE:
+                        mapped_label = LEGACY_BINARY_TO_SCORE[int(label)]
                     else:
                         mapped_label = label
 
@@ -178,12 +238,7 @@ class CsvStreamDataset(IterableDataset):
                     if mapped_label == -1:
                         continue
 
-                    # 校验映射后标签合法性，仅允许二分类标签 0/1
-                    if mapped_label < 0 or mapped_label > 1:
-                        raise ValueError(
-                            f"Invalid mapped label value: {mapped_label} (original: {label}). "
-                            "Expected binary labels [0, 1]."
-                        )
+                    mapped_label = validate_sentiment_score(mapped_label)
 
                     yield text, mapped_label
 
@@ -208,12 +263,7 @@ class CsvStreamDataset(IterableDataset):
                 if mapped_label == -1:
                     continue
 
-                # 校验映射后标签合法性
-                if mapped_label < 0 or mapped_label > 1:
-                    raise ValueError(
-                        f"Invalid mapped label value: {mapped_label} (original: {label}, index: {idx}). "
-                        "Expected binary labels [0, 1]."
-                    )
+                mapped_label = validate_sentiment_score(mapped_label)
 
                 yield text, mapped_label
 

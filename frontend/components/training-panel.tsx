@@ -22,6 +22,9 @@ interface JobStatus {
     loss: number | null;
     val_acc: number | null;
     val_f1: number | null;
+    val_weighted_f1?: number | null;
+    val_mae?: number | null;
+    val_qwk?: number | null;
     best_f1: number | null;
   };
   logs: string[];
@@ -40,6 +43,7 @@ const DATASET_OPTIONS = [
   { value: "ndiy/NLPCC14-SC", label: "NLPCC14-SC" },
   { value: "dirtycomputer/ChnSentiCorp_htl_all", label: "ChnSentiCorp Hotel" },
   { value: "BerlinWang/DMSC", label: "DMSC" },
+  { value: "ttxy/online_shopping_10_cats", label: "Online Shopping 10 Cats" },
 ];
 
 const LSTM_DEFAULTS: Record<string, string> = {
@@ -295,7 +299,7 @@ export function TrainingPanel() {
     <Card className="w-full max-w-3xl">
       <CardHeader>
         <CardTitle>模型训练</CardTitle>
-        <CardDescription>配置参数并启动 LSTM 或 BERT 情感分析模型训练</CardDescription>
+        <CardDescription>配置参数并启动 LSTM 或 BERT 0-5 情感评分模型训练</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         {/* 模型类型选择 */}
@@ -468,11 +472,14 @@ export function TrainingPanel() {
             )}
 
             {/* 指标 */}
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricBox label="Elapsed" value={elapsedText} />
               <MetricBox label="Loss" value={jobStatus.progress.loss} suffix="" />
               <MetricBox label="Val Accuracy" value={jobStatus.progress.val_acc} suffix="%" isPercent />
               <MetricBox label="Val Macro F1" value={jobStatus.progress.val_f1} suffix="" />
+              <MetricBox label="Val Weighted F1" value={jobStatus.progress.val_weighted_f1} suffix="" />
+              <MetricBox label="Val MAE" value={jobStatus.progress.val_mae} suffix="" />
+              <MetricBox label="Val QWK" value={jobStatus.progress.val_qwk} suffix="" />
               <MetricBox label="Best F1" value={jobStatus.progress.best_f1} suffix="" />
             </div>
           </div>
@@ -590,7 +597,7 @@ function MetricBox({
   isPercent,
 }: {
   label: string;
-  value: number | string | null;
+  value: number | string | null | undefined;
   suffix?: string;
   isPercent?: boolean;
 }) {

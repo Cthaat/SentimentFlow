@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn as nn
+
+_project_root = Path(__file__).resolve().parents[4]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from sentiment_scale import NUM_SENTIMENT_CLASSES
 
 
 class SentimentLSTM(nn.Module):
@@ -13,7 +22,7 @@ class SentimentLSTM(nn.Module):
         embed_dim: int = 128,
         hidden_dim: int = 256,
         num_layers: int = 2,
-        num_classes: int = 2,
+        num_classes: int = NUM_SENTIMENT_CLASSES,
         dropout: float = 0.5,
         pad_idx: int = 0,
         bidirectional: bool = False,

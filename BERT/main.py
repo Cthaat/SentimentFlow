@@ -20,7 +20,7 @@ def run() -> None:
 
     raw_datasets = os.getenv(
         "BERT_TRAIN_DATASETS",
-        "lansinuote/ChnSentiCorp,XiangPan/waimai_10k",
+        "lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/JD_review,BerlinWang/DMSC",
     )
     active_datasets = [item.strip() for item in raw_datasets.split(",") if item.strip()]
     print(f"Active BERT_TRAIN_DATASETS ({len(active_datasets)}): {', '.join(active_datasets)}")
@@ -41,9 +41,8 @@ def run() -> None:
     for text in DEFAULT_SAMPLES:
         result = predict_text(text, model, device, max_len=MAX_LEN)
         print(
-            f"{result['text']} -> {result['label']} "
-            f"(neg={result['negative_score']:.6f}, pos={result['positive_score']:.6f}, "
-            f"conf={result['confidence']:.6f})"
+            f"{result['text']} -> score={result['score']} {result['label_zh']} "
+            f"(conf={result['confidence']:.6f}, probs={result['probabilities']})"
         )
 
     print("\n" + "=" * 80)
@@ -58,14 +57,13 @@ def run() -> None:
 
         for text, expected_label in CUSTOM_TEST_CASES:
             result = predict_text(text, model, device, max_len=MAX_LEN)
-            predicted_label = 1 if result["label"] == "正面" else 0
-            is_correct = predicted_label == expected_label
+            predicted_score = int(result["score"])
+            is_correct = predicted_score == expected_label
             correct += is_correct
 
             status = "OK" if is_correct else "NG"
-            expected_text = "正面" if expected_label == 1 else "负面"
             print(
-                f"{status} '{text}' -> {result['label']} (expected: {expected_text}, "
+                f"{status} '{text}' -> {predicted_score} (expected: {expected_label}, "
                 f"conf={result['confidence']:.2%})"
             )
 

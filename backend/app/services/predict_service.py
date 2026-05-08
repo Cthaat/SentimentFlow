@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.config import ensure_backend_env_loaded, get_active_model_config, get_predict_model_type
-from app.core.paths import get_models_dir, normalize_lstm_model_dir
+from app.core.config import ensure_backend_env_loaded, get_predict_model_type
+from app.core.paths import get_models_dir
 from app.models.BERT import predict_text as predict_text_with_bert_model
 from app.models.LSTM import load_model as load_lstm_model
 from app.models.LSTM import predict_batch as predict_batch_with_lstm_model
 from app.utils.tokenizer import encode_text
+
+_project_root = Path(__file__).resolve().parents[3]
+if str(_project_root) not in sys.path:
+	sys.path.insert(0, str(_project_root))
+
+from sentiment_scale import (
+	NUM_SENTIMENT_CLASSES,
+	score_to_display_label,
+	score_to_label,
+	score_to_reasoning,
+)
 
 
 POSITIVE_WORDS = {
@@ -37,6 +49,10 @@ NEGATIVE_WORDS = {
 	"失望",
 	"垃圾",
 	"讨厌",
+	"糟糕",
+	"不推荐",
+	"不能接受",
+	"再也不",
 }
 
 
@@ -48,10 +64,18 @@ class PredictResult:
 	"""
 	# 原始输入文本。
 	text: str
-	# 情感标签：正面/负面/中性。
+	# 0-5 情感评分。
+	score: int
+	# 情感标签：如 extremely_negative / neutral / extremely_positive。
 	label: str
+	# 中文展示标签。
+	label_zh: str
 	# 置信分数：范围通常在 0 到 1。
-	score: float
+	confidence: float
+	# 6 个评分类别的概率，索引即 score。
+	probabilities: list[float]
+	# 简短可解释说明。
+	reasoning: str
 	# 结果来源：用于区分规则基线或模型推理。
 	source: str
 	# 模型名称：当前使用的模型标识。
@@ -73,15 +97,44 @@ def _keyword_baseline(text: str) -> PredictResult:
 
 	# 没有明显情绪词时返回中性结果。
 	if pos_hits == 0 and neg_hits == 0:
-		return PredictResult(text=text, label="中性", score=0.5, source="keyword-baseline", model_name="关键词基线")
-	# 正向命中不小于负向命中，判为正面。
+		return _make_result(text, 3, 0.5, "keyword-baseline", "关键词基线")
+	# 正向命中不小于负向命中，按命中差值映射为 4/5。
 	if pos_hits >= neg_hits:
-		score = min(0.55 + 0.1 * (pos_hits - neg_hits + 1), 0.99)
-		return PredictResult(text=text, label="正面", score=round(score, 4), source="keyword-baseline", model_name="关键词基线")
+		sentiment_score = 5 if pos_hits - neg_hits >= 2 else 4
+		confidence = min(0.55 + 0.1 * (pos_hits - neg_hits + 1), 0.99)
+		return _make_result(text, sentiment_score, confidence, "keyword-baseline", "关键词基线")
 
-	# 否则判为负面。
-	score = min(0.55 + 0.1 * (neg_hits - pos_hits + 1), 0.99)
-	return PredictResult(text=text, label="负面", score=round(score, 4), source="keyword-baseline", model_name="关键词基线")
+	# 否则按命中差值映射为极端/明显负面。
+	sentiment_score = 0 if neg_hits - pos_hits >= 2 else 1
+	confidence = min(0.55 + 0.1 * (neg_hits - pos_hits + 1), 0.99)
+	return _make_result(text, sentiment_score, confidence, "keyword-baseline", "关键词基线")
+
+
+def _make_result(
+	text: str,
+	score: int,
+	confidence: float,
+	source: str,
+	model_name: str,
+	probabilities: list[float] | None = None,
+) -> PredictResult:
+	if probabilities is None:
+		confidence = max(0.0, min(1.0, float(confidence)))
+		remainder = max(0.0, 1.0 - confidence)
+		background = remainder / max(1, NUM_SENTIMENT_CLASSES - 1)
+		probabilities = [background for _ in range(NUM_SENTIMENT_CLASSES)]
+		probabilities[score] = confidence
+	return PredictResult(
+		text=text,
+		score=score,
+		label=score_to_label(score),
+		label_zh=score_to_display_label(score),
+		confidence=round(float(confidence), 4),
+		probabilities=[round(float(value), 6) for value in probabilities],
+		reasoning=score_to_reasoning(score),
+		source=source,
+		model_name=model_name,
+	)
 
 
 def _predict_with_lstm(text: str) -> PredictResult:
@@ -112,13 +165,19 @@ def _predict_with_lstm(text: str) -> PredictResult:
 	)
 
 	input_ids = [encode_text(text=text, max_len=max_len, vocab_size=vocab_size)]
-	preds, confs = predict_batch_with_lstm_model(input_ids)
+	preds, confs, probs = predict_batch_with_lstm_model(input_ids)
 	pred = preds[0]
-	score = confs[0]
-	label = "正面" if pred == 1 else "负面"
+	confidence = confs[0]
 
 	model_dir = Path(model_path).parent.name if Path(model_path).parent.name.startswith("lstm_") else Path(model_path).stem
-	return PredictResult(text=text, label=label, score=round(float(score), 4), source="lstm", model_name=model_dir)
+	return _make_result(
+		text=text,
+		score=int(pred),
+		confidence=float(confidence),
+		source="lstm",
+		model_name=model_dir,
+		probabilities=probs[0],
+	)
 
 
 def _predict_with_bert(text: str) -> PredictResult:
@@ -127,8 +186,12 @@ def _predict_with_bert(text: str) -> PredictResult:
 	model_name = Path(os.getenv("BERT_CHECKPOINT_PATH", "")).name
 	return PredictResult(
 		text=result["text"],
+		score=int(result["score"]),
 		label=result["label"],
-		score=round(float(result["confidence"]), 4),
+		label_zh=result.get("label_zh", score_to_display_label(int(result["score"]))),
+		confidence=round(float(result["confidence"]), 4),
+		probabilities=[float(value) for value in result.get("probabilities", [])],
+		reasoning=result.get("reasoning", score_to_reasoning(int(result["score"]))),
 		source="bert",
 		model_name=model_name,
 	)

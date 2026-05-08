@@ -23,8 +23,12 @@ def predict(req: PredictRequest) -> PredictResponse:
 
     return PredictResponse(
         text=result.text,
-        label=result.label,
         score=result.score,
+        label=result.label,
+        label_zh=result.label_zh,
+        confidence=result.confidence,
+        probabilities=result.probabilities,
+        reasoning=result.reasoning,
         source=result.source,
         model_name=result.model_name,
     )

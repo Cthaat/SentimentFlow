@@ -15,7 +15,29 @@ type ApiResult = {
 	error?: string;
 };
 
+type PredictPayload = {
+	text: string;
+	score: number;
+	label: string;
+	label_zh: string;
+	confidence: number;
+	probabilities: number[];
+	reasoning: string;
+	source: string;
+	model_name?: string;
+};
+
 const defaultText = "这个产品非常好用，体验超出预期。";
+
+const scoreLabels = ["极端负面", "明显负面", "略微负面", "中性", "略微正面", "极端正面"];
+const scoreStyles = [
+	"bg-red-600 text-white",
+	"bg-orange-500 text-white",
+	"bg-amber-400 text-zinc-950",
+	"bg-zinc-500 text-white",
+	"bg-emerald-500 text-white",
+	"bg-green-700 text-white",
+];
 
 export function IntegrationTestPanel() {
 	const [text, setText] = useState(defaultText);
@@ -108,6 +130,11 @@ export function IntegrationTestPanel() {
 			? (predictResult.payload as { model_name?: string })?.model_name || null
 			: null;
 
+	const prediction =
+		predictResult?.ok && predictResult.payload
+			? (predictResult.payload as PredictPayload)
+			: null;
+
 	return (
 		<Card className="w-full max-w-3xl">
 			<CardHeader>
@@ -158,6 +185,46 @@ export function IntegrationTestPanel() {
 					<div className="flex items-center gap-2 rounded-lg border border-green-300 bg-green-50 px-3 py-2 dark:border-green-700 dark:bg-green-900/30">
 						<span className="text-xs text-muted-foreground">当前使用模型</span>
 						<Badge variant="default" className="text-xs">{usedModelName || activeModelName}</Badge>
+					</div>
+				)}
+
+				{prediction && (
+					<div className="space-y-4 rounded-lg border p-4">
+						<div className="flex flex-wrap items-center justify-between gap-3">
+							<div className="flex items-center gap-3">
+								<span className={`inline-flex h-12 w-12 items-center justify-center rounded-md text-xl font-semibold ${scoreStyles[prediction.score] ?? "bg-zinc-500 text-white"}`}>
+									{prediction.score}
+								</span>
+								<div>
+									<p className="text-sm font-medium">{prediction.label_zh || scoreLabels[prediction.score]}</p>
+									<p className="text-xs text-muted-foreground">{prediction.label}</p>
+								</div>
+							</div>
+							<div className="text-right">
+								<p className="text-xs text-muted-foreground">置信度</p>
+								<p className="text-lg font-semibold tabular-nums">{(prediction.confidence * 100).toFixed(2)}%</p>
+							</div>
+						</div>
+						<div className="space-y-2">
+							{scoreLabels.map((label, score) => {
+								const probability = prediction.probabilities?.[score] ?? 0;
+								return (
+									<div key={score} className="grid grid-cols-[4.5rem_1fr_3.5rem] items-center gap-2 text-xs">
+										<span className="text-muted-foreground">{score} {label}</span>
+										<div className="h-2 overflow-hidden rounded-full bg-muted">
+											<div
+												className={`h-full ${scoreStyles[score].split(" ")[0]}`}
+												style={{ width: `${Math.max(0, Math.min(1, probability)) * 100}%` }}
+											/>
+										</div>
+										<span className="text-right tabular-nums">{(probability * 100).toFixed(1)}%</span>
+									</div>
+								);
+							})}
+						</div>
+						<p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+							{prediction.reasoning}
+						</p>
 					</div>
 				)}
 

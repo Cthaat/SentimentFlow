@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import torch.nn as nn
 
+from sentiment_scale import NUM_SENTIMENT_CLASSES
+
 
 class SentimentLSTMModel(nn.Module):
-    """Embedding + LSTM + Linear 的二分类网络。"""
+    """Embedding + LSTM + Linear 的 0-5 情感评分分类网络。"""
 
-    def __init__(self, vocab_size: int):
+    def __init__(self, vocab_size: int, num_classes: int = NUM_SENTIMENT_CLASSES):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, 128, padding_idx=0)
         self.lstm = nn.LSTM(128, 256, num_layers=2, dropout=0.5, batch_first=True)
-        self.fc = nn.Linear(256, 2)
+        self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
         # x: [batch_size, seq_len]

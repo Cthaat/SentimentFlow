@@ -9,7 +9,7 @@ texts = [
     "awful one"
 ]
 
-labels = [1, 0, 1, 0, 1, 0]  # 1=正面，0=负面
+labels = [5, 0, 4, 1, 5, 0]  # 0-5 情感评分
 
 # ==================================================================
 
@@ -65,8 +65,8 @@ class SimpleModel(nn.Module):
         self.embedding = nn.Embedding(vocab_size, 4)
         # LSTM 理解文本序列，输入维度 16，隐藏状态维度 32，batch_first=True 表示输入输出的 batch 维在第一位。
         self.lstm = nn.LSTM(4, 8, batch_first=True)
-        # 线性层将 LSTM 的输出映射到 2 个类别的 logits。
-        self.fc = nn.Linear(8, 2)
+        # 线性层将 LSTM 的输出映射到 6 个评分类别的 logits。
+        self.fc = nn.Linear(8, 6)
     
     # 前向传播：输入 x 经过嵌入层、LSTM 层，取最后一个时间步的输出，经过线性层得到 logits。
     def forward(self, x):

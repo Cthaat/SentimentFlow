@@ -14,6 +14,8 @@ interface ModelInfo {
 	path: string;
 	size_mb: number | null;
 	best_f1: number | null;
+	best_mae?: number | null;
+	best_qwk?: number | null;
 	best_epoch: number | null;
 }
 
@@ -190,6 +192,12 @@ export function ModelManagementPanel() {
 											<span>
 												Best F1: {(model.best_f1 * 100).toFixed(2)}%
 											</span>
+										)}
+										{model.best_mae != null && (
+											<span>MAE: {model.best_mae.toFixed(3)}</span>
+										)}
+										{model.best_qwk != null && (
+											<span>QWK: {model.best_qwk.toFixed(3)}</span>
 										)}
 										{model.best_epoch != null && (
 											<span>Best Epoch: {model.best_epoch}</span>

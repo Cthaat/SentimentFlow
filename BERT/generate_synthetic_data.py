@@ -1,43 +1,49 @@
-"""生成短句训练数据。"""
+"""生成 0-5 情感评分短句训练数据。"""
 
 from __future__ import annotations
 
+import random
+
 from datasets import Dataset
 
-
-POSITIVE_SHORT_SENTENCES = [
-    "很好", "不错", "好", "很棒", "太棒了", "非常好", "喜欢", "满意", "完美", "赞", "流畅", "清晰", "舒服", "新鲜",
-]
-
-NEGATIVE_SHORT_SENTENCES = [
-    "很差", "差", "太差了", "糟糕", "很烂", "讨厌", "失望", "垃圾", "卡顿", "闪退", "很慢", "粗糙", "廉价", "不推荐",
-]
+from sentiment_scale import SENTIMENT_DISPLAY_LABELS, SENTIMENT_SCORES
 
 
-def generate_short_sentence_dataset(size: int = 10000):
-    """生成短句训练数据。"""
-    import random
+SENTENCE_BANK: dict[int, list[str]] = {
+    0: ["糟糕透顶", "完全不能接受", "差到离谱", "再也不会买了", "极度失望"],
+    1: ["很差", "不太满意", "问题比较多", "体验很不好", "明显不推荐"],
+    2: ["有点失望", "略微不舒服", "稍微有些卡顿", "不算太好", "还有点粗糙"],
+    3: ["一般般", "中规中矩", "没有明显好坏", "还算普通", "符合基本预期"],
+    4: ["还不错", "比较满意", "体验挺好", "基本符合预期", "值得考虑"],
+    5: ["非常满意", "远超预期", "太棒了", "强烈推荐", "完美"],
+}
 
+
+def generate_short_sentence_dataset(size: int = 12000):
+    """生成均衡的 0-5 短句数据集。"""
     random.seed(42)
+    domains = ["这个产品", "这次体验", "这个功能", "这个服务", "整体表现", "这款产品"]
+    per_class = max(1, size // len(SENTIMENT_SCORES))
+
     data = []
-    domains = ["这个", "这个产品", "这款", "这个功能", "这件"]
-
-    for _ in range(size // 2):
-        prefix = random.choice(domains)
-        sentence = random.choice(POSITIVE_SHORT_SENTENCES)
-        full_text = f"{prefix}{sentence}" if len(sentence) < 5 else sentence
-        data.append({"text": full_text, "label": 1})
-
-    for _ in range(size // 2):
-        prefix = random.choice(domains)
-        sentence = random.choice(NEGATIVE_SHORT_SENTENCES)
-        full_text = f"{prefix}{sentence}" if len(sentence) < 5 else sentence
-        data.append({"text": full_text, "label": 0})
+    for score in SENTIMENT_SCORES:
+        for _ in range(per_class):
+            prefix = random.choice(domains)
+            sentence = random.choice(SENTENCE_BANK[score])
+            data.append({"text": f"{prefix}{sentence}", "label": score})
 
     random.shuffle(data)
-    return Dataset.from_dict(
-        {
-            "text": [d["text"] for d in data],
-            "label": [d["label"] for d in data],
-        }
-    )
+    return Dataset.from_dict({
+        "text": [item["text"] for item in data],
+        "label": [item["label"] for item in data],
+    })
+
+
+if __name__ == "__main__":
+    ds = generate_short_sentence_dataset(size=120)
+    print("生成的前10条数据：")
+    for i in range(10):
+        text = ds["text"][i]
+        label = int(ds["label"][i])
+        print(f"  [{label} {SENTIMENT_DISPLAY_LABELS[label]}] {text}")
+    print(f"总量：{len(ds)} 条")

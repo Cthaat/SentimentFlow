@@ -50,7 +50,7 @@ SentimentFlow 是一个中文情感分析系统。**BERT 分支**用预训练的
 | 多数据源融合 | 一次配置，自动合并多个 Hugging Face 数据集 |
 | 平衡采样 | 对类别不均衡数据集（如 DMSC）自动做 force-balance |
 | 早停 | 基于验证集 Macro-F1 的 patience 早停机制 |
-| 加权损失 | 可选的类别权重交叉熵，缓解正负比失衡 |
+| 加权损失 | 可选的类别权重交叉熵，缓解 0-5 评分分布失衡 |
 | 梯度累积 | 在小显存 GPU 上模拟更大有效 batch |
 | 混合精度 | CUDA 下自动启用 float16 加速 |
 | 短句增强 | 支持合成短句数据集与从长文本提取短句的混合训练 |
@@ -182,14 +182,14 @@ pip install transformers datasets pandas jieba
 ### 训练模型
 
 ```bash
-# 使用默认数据集（ChnSentiCorp + waimai_10k）训练 BERT 模型
+# 使用默认数据集（二分类旧数据 + 1-5 星级评分数据）训练 BERT 0-5 评分模型
 python BERT.py
 
 # 强制重新训练（忽略已有 checkpoint）
 BERT_FORCE_RETRAIN=1 python BERT.py
 
 # 自定义数据集与超参数
-BERT_TRAIN_DATASETS="lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/weibo_senti_100k" \
+BERT_TRAIN_DATASETS="lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/JD_review,BerlinWang/DMSC" \
 BERT_EPOCHS=3 \
 BERT_TRAIN_BATCH_SIZE=32 \
 python BERT.py
@@ -207,7 +207,8 @@ model, device = load_or_train()   # 自动加载已有 checkpoint
 
 result = predict_text("这个产品质量太差了，完全不推荐！", model, device)
 print(result)
-# {'text': '...', 'label': '负面', 'confidence': 0.997, 'negative_score': 0.997, 'positive_score': 0.003}
+# {'text': '...', 'score': 0, 'label': 'extremely_negative', 'label_zh': '极端负面',
+#  'confidence': 0.997, 'probabilities': [0.997, 0.0, 0.0, 0.0, 0.0, 0.003]}
 ```
 
 ---
@@ -236,14 +237,14 @@ class SentimentBertModel(nn.Module):
     def __init__(self, model_name=BERT_MODEL_NAME):
         super().__init__()
         self.backbone = AutoModelForSequenceClassification.from_pretrained(
-            model_name, num_labels=2
+            model_name, num_labels=6
         )
 
     def forward(self, input_ids, attention_mask):
         return self.backbone(input_ids=input_ids, attention_mask=attention_mask).logits
 ```
 
-- 直接使用 `AutoModelForSequenceClassification`，HuggingFace 自动接上二分类输出头。
+- 直接使用 `AutoModelForSequenceClassification`，HuggingFace 自动接上 6 分类输出头。
 - 支持任意兼容的中文 BERT/RoBERTa 模型，只需修改 `BERT_MODEL_NAME`。
 
 ---
@@ -278,7 +279,9 @@ def encode_text(text, max_len):
 
 **关键设计**：Dataset 只返回 `(text, label)` 原始字符串，不在单条样本层面 tokenize。批量 tokenize 由 DataLoader 的 `collate_fn` 统一完成，大幅提升吞吐量。
 
-`label_map` 参数可将原始标签映射到 `{0, 1}`，`-1` 表示跳过该样本（用于多分类数据集映射到二分类时过滤无效样本）。
+`label_map` 参数可将原始标签映射到 `{0, 1, 2, 3, 4, 5}`，`-1` 表示跳过该样本。旧二分类数据自动按 `0 -> 0`、`1 -> 5` 迁移。
+
+CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 判断：只有整份 CSV 的标签集合确认为 `{0, 1}` 时才会自动迁移，真实 0-5 CSV 中的 `1` 分会保持为 `1`。若你的数据集只有 `0/1` 两档但语义是 0-5 评分子集，可设置 `MIGRATE_LEGACY_BINARY_LABELS=0` 关闭自动迁移。
 
 ---
 
@@ -290,8 +293,8 @@ def encode_text(text, max_len):
 2. **数据集加载**：通过 `datasets.load_dataset()` 下载，自动处理 `train / validation / test` 分割；若数据集无验证集，则按 `TRAIN_VAL_RATIO` 自动切分。
 3. **标签清洗**（`_normalize_split_columns`）：
    - 自动识别文本列和标签列（支持多种列名格式）。
-   - 将多元标签（如 DMSC 的 1-5 星评分）统一转换为 `0 / 1` 二值标签，中间值（如 3 星）标注为 `-1` 并过滤。
-4. **平衡采样**（`_force_balance_binary_split`）：对 DMSC 等正负极度不均的数据集，自动截取少数类数量，保证 `neg == pos`。
+   - 将多元标签统一转换为 0-5 情感评分；1-5 星级数据映射到评分档位，旧 0/1 数据迁移到 0/5。
+4. **平衡采样**（`_force_balance_score_split`）：对 DMSC 等评分分布不均的数据集，按存在的评分类别做下采样均衡。
 5. **多数据集合并**：用 `datasets.concatenate_datasets` 拼接，再整体 shuffle。
 6. **短句增强**（可选）：
    - `USE_EXTRACTED_SHORT_SENTENCES=1`：加载 `BERT/extracted_short_sentences.csv` 混入短句。
@@ -307,11 +310,11 @@ def encode_text(text, max_len):
 初始化设备 (CUDA / CPU)
 → 获取运行时配置 (RuntimeSettings)
 → 加载并合并多数据集
-→ 统计正负样本分布，构建加权损失函数（可选）
+→ 统计 0-5 样本分布，构建加权 CrossEntropyLoss（可选）
 → 构建 DataLoader（批量 tokenize via collate_fn）
 → 初始化 SentimentBertModel，AdamW + LinearWarmup 调度器
 → 混合精度训练循环（GradScaler）+ 梯度累积
-→ 每 epoch 结束后在验证集评估 Accuracy / Macro-F1
+→ 每 epoch 结束后在验证集评估 Accuracy / Macro-F1 / Weighted-F1 / MAE / QWK
 → 保存最优 checkpoint（基于 val_f1）
 → 早停（patience 轮 val_f1 不提升则提前结束）
 → 加载最优 checkpoint 返回
@@ -324,7 +327,7 @@ def encode_text(text, max_len):
 | 批量 tokenize | `collate_fn` 一次处理整批文本，避免逐条 tokenize |
 | 混合精度 | `torch.amp.GradScaler` + `autocast`，CUDA 下自动启用 |
 | 梯度累积 | `BERT_TRAIN_ACCUM_STEPS` 控制，小显存下模拟大 batch |
-| 加权损失 | `BERT_TRAIN_WEIGHTED_LOSS=1` 时按正负样本比例加权 |
+| 加权损失 | `BERT_TRAIN_WEIGHTED_LOSS=1` 时按 0-5 各评分样本比例加权 |
 | 早停 | `BERT_EARLY_STOP_PATIENCE` 控制容忍轮数 |
 | 最优 checkpoint | 按验证集 Macro-F1 保存最优，训练结束后自动恢复 |
 
@@ -335,7 +338,7 @@ def encode_text(text, max_len):
 `evaluate(model, split, device, batch_size, max_len)` 在验证集上计算：
 
 - **Accuracy**：`(TP + TN) / Total`
-- **Macro-F1**：正负类 F1 的算术平均，更能反映类别不平衡下的真实性能
+- **Macro-F1**：各存在评分类别 F1 的算术平均，更能反映类别不平衡下的真实性能
 
 采用与训练相同的 `bert_collate_fn`，保证评估和训练的 tokenize 行为完全一致。
 
@@ -381,14 +384,16 @@ return train_model()
 ```python
 {
     "text":            "这个产品非常好用",
-    "label":           "正面",          # "正面" / "负面"
+    "score":           5,
+    "label":           "extremely_positive",
+    "label_zh":        "极端正面",
     "confidence":      0.998,
-    "negative_score":  0.002,
-    "positive_score":  0.998,
+    "probabilities":   [0.001, 0.0, 0.0, 0.001, 0.0, 0.998],
+    "reasoning":       "模型将文本情感强度判定为 5 分（极端正面）。",
 }
 ```
 
-使用 `torch.inference_mode()` 关闭梯度计算，并通过 `softmax` 将 logits 转换为概率，取概率较高的类作为最终预测。
+使用 `torch.inference_mode()` 关闭梯度计算，并通过 `softmax` 将 6 维 logits 转换为概率，取概率最高的评分作为最终预测。
 
 ---
 
@@ -408,13 +413,13 @@ return train_model()
 
 | 数据集 | HuggingFace 名称 | 类型 | 说明 |
 |--------|-----------------|------|------|
-| ChnSentiCorp | `lansinuote/ChnSentiCorp` | 默认 | 中文酒店、购物、旅游评论，二分类 |
-| 外卖评论 | `XiangPan/waimai_10k` | 默认 | 外卖平台用户评论，二分类 |
-| 微博情感 | `dirtycomputer/weibo_senti_100k` | 可选 | 微博正负情感，10万条 |
-| JD 商品评论 | `dirtycomputer/JD_review` | 可选 | 京东评论，1-5 星转二分类 |
+| ChnSentiCorp | `lansinuote/ChnSentiCorp` | 默认 | 旧二分类数据，自动 0→0 / 1→5 |
+| 外卖评论 | `XiangPan/waimai_10k` | 默认 | 旧二分类数据，自动 0→0 / 1→5 |
+| 微博情感 | `dirtycomputer/weibo_senti_100k` | 可选 | 旧二分类数据，自动 0→0 / 1→5 |
+| JD 商品评论 | `dirtycomputer/JD_review` | 默认 | 京东评论，1-5 星映射到 0-5 评分 |
 | NLPCC14-SC | `ndiy/NLPCC14-SC` | 可选 | NLPCC 2014 情感评测数据 |
 | 酒店评论 | `dirtycomputer/ChnSentiCorp_htl_all` | 可选 | ChnSentiCorp 酒店完整版 |
-| DMSC | `BerlinWang/DMSC` | 可选 | 豆瓣影评，1-5 星，自动平衡 |
+| DMSC | `BerlinWang/DMSC` | 默认 | 豆瓣影评，1-5 星，自动平衡 |
 
 **使用别名**（`DATASET_ALIASES`）时，可以用简写名：
 
@@ -461,10 +466,26 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `BERT_TRAIN_DATASETS` | `lansinuote/ChnSentiCorp,XiangPan/waimai_10k` | 逗号分隔的数据集名称列表 |
+| `BERT_TRAIN_DATASETS` | `lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/JD_review,BerlinWang/DMSC` | 逗号分隔的数据集名称列表，也支持本地 CSV 路径 |
 | `TRAIN_VAL_RATIO` | `0.1` | 无 validation split 时自动切分比例 |
 | `TRAIN_MAX_SAMPLES` | `0`（不限） | 训练集最大样本数 |
 | `TRAIN_MAX_VAL_SAMPLES` | `0`（不限） | 验证集最大样本数 |
+| `MIGRATE_LEGACY_BINARY_LABELS` | `auto` | 自动识别旧 0/1 标签并迁移到 0/5；设为 `0` 可关闭 |
+
+### 半监督 0/1 细分
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SEMI_SUPERVISED_01_TO_05` | `auto` | `0` 关闭；其他值表示尝试用 teacher 将旧 0/1 数据细分到 0-5 |
+| `PSEUDO_LABEL_TEACHER_PATH` | 空 | 通用 teacher checkpoint 路径 |
+| `LSTM_PSEUDO_LABEL_TEACHER_PATH` | 空 | LSTM 专用 teacher `.pt` 路径 |
+| `BERT_PSEUDO_LABEL_TEACHER_PATH` | 空 | BERT 专用 teacher 目录 |
+| `PSEUDO_LABEL_MIN_CONFIDENCE` | `0.45` | teacher 伪标签最低置信度 |
+| `PSEUDO_LABEL_FALLBACK_TO_ENDPOINT` | `1` | 低置信度时保留弱标签端点：`0->0`、`1->5` |
+| `PSEUDO_LABEL_BATCH_SIZE` | LSTM `128` / BERT `64` | teacher 推理 batch 大小 |
+| `PSEUDO_LABEL_VALIDATION_SPLIT` | `0` | 是否也对 validation split 打伪标签；默认只处理训练集 |
+
+半监督细分会保留 0/1 弱标签的极性约束：原始 `0` 只会被细分为 `0/1/2`，原始 `1` 只会被细分为 `4/5`。这避免 teacher 把弱负面样本误打成正面，或把弱正面样本误打成负面。
 
 ### 短句增强
 
@@ -530,8 +551,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```json
 {
   "text":   "这个手机的电池续航很不错！",
-  "label":  "正面",
-  "score":  0.9982,
+  "score":  4,
+  "label":  "slightly_positive",
+  "label_zh": "略微正面",
+  "confidence": 0.8731,
+  "probabilities": [0.002, 0.006, 0.018, 0.081, 0.873, 0.020],
+  "reasoning": "模型将文本情感强度判定为 4 分（略微正面）。",
   "source": "bert"
 }
 ```
@@ -539,8 +564,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | 字段 | 说明 |
 |------|------|
 | `text` | 原始输入文本 |
-| `label` | 情感标签：`"正面"` 或 `"负面"` |
-| `score` | 置信度（0 ~ 1） |
+| `score` | 情感评分，整数 0-5 |
+| `label` | 机器可读标签，如 `"slightly_positive"` |
+| `label_zh` | 中文展示标签 |
+| `confidence` | 预测评分的置信度（0 ~ 1） |
+| `probabilities` | 长度为 6 的概率数组，索引即评分 |
+| `reasoning` | 简短解释文本 |
 | `source` | 模型来源：`"bert"` 或 `"lstm"` |
 
 ---
@@ -638,8 +667,11 @@ model, device = load_or_train()   # BERT_FORCE_RETRAIN=0 时直接加载
 from BERT.data_sources import build_train_split_and_val_split
 _, _, val_split, _ = build_train_split_and_val_split()
 
-accuracy, macro_f1 = evaluate(model, val_split, device, batch_size=64, max_len=128)
-print(f"Accuracy: {accuracy:.4f}, Macro-F1: {macro_f1:.4f}")
+metrics = evaluate(model, val_split, device, batch_size=64, max_len=128)
+print(
+    f"Accuracy: {metrics.accuracy:.4f}, Macro-F1: {metrics.macro_f1:.4f}, "
+    f"MAE: {metrics.mae:.4f}, QWK: {metrics.quadratic_weighted_kappa:.4f}"
+)
 ```
 
 **Q：`extracted_short_sentences.csv` 是什么？如何生成？**

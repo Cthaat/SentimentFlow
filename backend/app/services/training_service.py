@@ -39,6 +39,9 @@ class TrainingProgress:
     loss: float | None = None
     val_acc: float | None = None
     val_f1: float | None = None
+    val_weighted_f1: float | None = None
+    val_mae: float | None = None
+    val_qwk: float | None = None
     best_f1: float | None = None
 
 
@@ -72,6 +75,9 @@ class TrainingJob:
                 "loss": self.progress.loss,
                 "val_acc": self.progress.val_acc,
                 "val_f1": self.progress.val_f1,
+                "val_weighted_f1": self.progress.val_weighted_f1,
+                "val_mae": self.progress.val_mae,
+                "val_qwk": self.progress.val_qwk,
                 "best_f1": self.progress.best_f1,
             },
             "logs": self.logs[-50:],
@@ -84,7 +90,9 @@ class TrainingJob:
 
 
 _EPOCH_PATTERN = re.compile(
-    r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([\d.]+)[,.]?\s*ValAcc:\s*([\d.]+)[,.]?\s*ValMacroF1:\s*([\d.]+)"
+    r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([\d.]+)[,.]?\s*ValAcc:\s*([\d.]+)[,.]?\s*"
+    r"ValMacroF1:\s*([\d.]+)(?:[,.]?\s*ValWeightedF1:\s*([\d.]+)[,.]?\s*"
+    r"ValMAE:\s*([\d.]+)[,.]?\s*ValQWK:\s*([-\d.]+))?"
 )
 _STEP_PATTERN = re.compile(
     r"Epoch\s+(\d+)/(\d+),\s*Step\s+(\d+)/(\d+),\s*Loss:\s*([\d.]+)"
@@ -348,6 +356,10 @@ class _StreamCapture:
             self.job.progress.loss = float(m.group(2))
             self.job.progress.val_acc = float(m.group(3))
             self.job.progress.val_f1 = float(m.group(4))
+            if m.group(5) is not None:
+                self.job.progress.val_weighted_f1 = float(m.group(5))
+                self.job.progress.val_mae = float(m.group(6))
+                self.job.progress.val_qwk = float(m.group(7))
 
         m2 = _BEST_MODEL_PATTERN.search(line)
         if m2:
