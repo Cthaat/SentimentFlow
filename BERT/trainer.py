@@ -166,8 +166,6 @@ def _ordinal_loss_config() -> OrdinalLossConfig:
     return OrdinalLossConfig(
         ce_weight=float(os.getenv("ORDINAL_CE_WEIGHT", "1.0")),
         distance_weight=float(os.getenv("ORDINAL_DISTANCE_WEIGHT", "0.35")),
-        ordinal_weight=float(os.getenv("ORDINAL_BCE_WEIGHT", "0.5")),
-        regression_weight=float(os.getenv("ORDINAL_REGRESSION_WEIGHT", "0.2")),
         label_smoothing=float(os.getenv("ORDINAL_LABEL_SMOOTHING", "0.05")),
         pseudo_label_smoothing=float(os.getenv("PSEUDO_LABEL_SMOOTHING", "0.02")),
         focal_gamma=float(os.getenv("FOCAL_GAMMA", "1.5")),

@@ -10,11 +10,7 @@ import torch
 import torch.nn as nn
 
 from sentiment_scale import (
-    NUM_SENTIMENT_CLASSES,
     probabilities_to_prediction,
-    score_to_display_label,
-    score_to_label,
-    score_to_reasoning,
 )
 
 from .config import MAX_LEN, get_model_name
@@ -80,29 +76,11 @@ def _forward_for_inference(model, *, input_ids: torch.Tensor, attention_mask: to
 def outputs_to_predictions(outputs: torch.Tensor | dict[str, torch.Tensor]) -> list[dict]:
     """Convert model outputs to the stable 0-5 API contract.
 
-    Hybrid checkpoints use ordinal/regression heads to choose the final score.
-    The returned probability vector is still the 6-class softmax, so downstream
-    API/UI contracts remain unchanged.
+    The final score is the argmax of the 6-class softmax probability vector.
     """
     output_dict = _as_output_dict(outputs)
     probabilities = output_probabilities(output_dict)
-    scores = prediction_scores_from_outputs(output_dict, probabilities=probabilities)
-    predictions: list[dict] = []
-    for probability_row, score_value in zip(probabilities.detach().cpu(), scores.detach().cpu()):
-        score = int(torch.round(score_value).clamp(0, NUM_SENTIMENT_CLASSES - 1).item())
-        base = probabilities_to_prediction(probability_row.tolist())
-        if score != int(base["score"]):
-            base.update(
-                {
-                    "score": score,
-                    "label": score_to_label(score),
-                    "label_zh": score_to_display_label(score),
-                    "confidence": round(float(probability_row[score]), 6),
-                    "reasoning": score_to_reasoning(score),
-                }
-            )
-        predictions.append(base)
-    return predictions
+    return [probabilities_to_prediction(row.tolist()) for row in probabilities.detach().cpu()]
 
 
 def output_probabilities(outputs: torch.Tensor | dict[str, torch.Tensor], *, temperature: float | None = None) -> torch.Tensor:
@@ -114,47 +92,10 @@ def output_probabilities(outputs: torch.Tensor | dict[str, torch.Tensor], *, tem
     return torch.softmax(logits.float() / scale, dim=1)
 
 
-def prediction_scores_from_outputs(
-    outputs: torch.Tensor | dict[str, torch.Tensor],
-    *,
-    probabilities: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Predict continuous 0-5 scores from classification + ordinal heads."""
-    output_dict = _as_output_dict(outputs)
-    if probabilities is None:
-        probabilities = output_probabilities(output_dict)
-
-    score_values = torch.arange(NUM_SENTIMENT_CLASSES, device=probabilities.device, dtype=probabilities.dtype)
-    class_expected = (probabilities * score_values).sum(dim=1)
-    components: list[torch.Tensor] = [class_expected]
-    weights = [float(os.getenv("BERT_INFERENCE_CLASS_WEIGHT", "0.7"))]
-
-    ordinal_logits = output_dict.get("ordinal_logits")
-    if ordinal_logits is not None and os.getenv("BERT_INFERENCE_USE_ORDINAL_HEAD", "1") == "1":
-        ordinal_expected = torch.sigmoid(ordinal_logits.float()).sum(dim=1)
-        components.append(ordinal_expected.to(probabilities.device))
-        weights.append(float(os.getenv("BERT_INFERENCE_ORDINAL_WEIGHT", "0.2")))
-
-    score_prediction = output_dict.get("score")
-    if score_prediction is not None and os.getenv("BERT_INFERENCE_USE_REGRESSION_HEAD", "1") == "1":
-        components.append(score_prediction.float().to(probabilities.device).clamp(0, NUM_SENTIMENT_CLASSES - 1))
-        weights.append(float(os.getenv("BERT_INFERENCE_REGRESSION_WEIGHT", "0.1")))
-
-    positive_weights = [max(0.0, weight) for weight in weights]
-    weight_total = sum(positive_weights)
-    if weight_total <= 0:
-        return torch.argmax(probabilities, dim=1).float()
-
-    score = torch.zeros_like(class_expected)
-    for component, weight in zip(components, positive_weights):
-        score = score + component * (weight / weight_total)
-    return score.clamp(0, NUM_SENTIMENT_CLASSES - 1)
-
-
 def predicted_classes_from_outputs(outputs: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
     """Return discrete 0-5 classes for evaluation."""
-    scores = prediction_scores_from_outputs(outputs)
-    return torch.round(scores).clamp(0, NUM_SENTIMENT_CLASSES - 1).long()
+    probabilities = output_probabilities(outputs)
+    return torch.argmax(probabilities, dim=1).long()
 
 
 def prepare_inference_model(model, device: torch.device, *, compile_model: bool | None = None, quantize: bool | None = None):

@@ -16,7 +16,7 @@
    - [运行推理](#运行推理)
 5. [BERT 模块详解](#bert-模块详解)
    - [config.py — 配置中心](#configpy--配置中心)
-   - [model.py — Hybrid Ordinal 模型定义](#modelpy--hybrid-ordinal-模型定义)
+   - [model.py — 多分类模型定义](#modelpy--多分类模型定义)
    - [text_processing.py — 文本处理](#text_processingpy--文本处理)
    - [dataset.py — 数据集](#datasetpy--数据集)
    - [data_sources.py — 多数据源构建](#data_sourcespy--多数据源构建)
@@ -50,8 +50,8 @@ SentimentFlow 是一个中文情感分析系统。**BERT 分支**用预训练的
 | 两阶段训练 | Teacher 仅用 DMSC/JD_review 真实多分类数据；Student 混合真实标签与高置信伪标签 |
 | 软伪标签 | Teacher 对二分类数据生成 0-5 soft pseudo labels，结合弱极性候选桶过滤，低置信样本直接丢弃 |
 | 早停 | 默认基于验证集 QWK 的 patience 早停机制 |
-| Hybrid ordinal 模型 | 6 类分类头 + 5 阈值 ordinal head + 连续评分回归头 |
-| 序数损失 | Class-balanced focal CE + ordinal BCE + expected-score / regression 距离惩罚 |
+| 六分类模型 | BERT/RoBERTa backbone + 6 维 score logits |
+| 多分类损失 | Class-balanced focal CrossEntropy + expected-score 距离惩罚 |
 | 类别不平衡 | Effective-number class weights、logit adjustment、分布感知过采样，保留全量数据 |
 | 梯度累积 | 在小显存 GPU 上模拟更大有效 batch |
 | 混合精度 | 支持 fp16 / bf16，可选 Accelerate |
@@ -75,7 +75,7 @@ SentimentFlow/
 │   ├── evaluate.py                # Accuracy / F1 / MAE / RMSE / QWK / Spearman
 │   ├── checkpoint.py              # 模型与 tokenizer 的保存 / 加载
 │   ├── pipeline.py                # load_or_train 调度入口
-│   ├── inference.py               # 批量推理、hybrid ordinal 评分、ONNX 导出
+│   ├── inference.py               # 批量推理、softmax argmax 评分、ONNX 导出
 │   ├── export.py                  # checkpoint -> ONNX CLI
 │   ├── main.py                    # run() 脚本入口
 │   ├── sample_texts.py            # 演示预测示例文本
@@ -242,7 +242,7 @@ BERT_MODEL_NAME = os.getenv("BERT_MODEL_NAME", "hfl/chinese-roberta-wwm-ext")
 
 ---
 
-### model.py — Hybrid Ordinal 模型定义
+### model.py — 多分类模型定义
 
 ```python
 class SentimentBertModel(nn.Module):
@@ -250,21 +250,14 @@ class SentimentBertModel(nn.Module):
         super().__init__()
         self.backbone = AutoModel.from_pretrained(model_name)
         self.classifier = nn.Linear(hidden_size, 6)
-        self.ordinal_head = nn.Linear(hidden_size, 5)
-        self.regression_head = nn.Linear(hidden_size, 1)
 
     def forward(self, input_ids, attention_mask, return_dict=False):
         ...
-        return {
-            "logits": class_logits,
-            "ordinal_logits": ordinal_logits,
-            "score": score,
-        }
+        return {"logits": class_logits}
 ```
 
-- 默认架构为 `BERT_MODEL_ARCHITECTURE=hybrid`，同时学习 6 类分类概率、5 个累计阈值和连续评分。
-- `ordinal_logits` 对应 `P(score > k)`，用于建模 `0 < 1 < 2 < 3 < 4 < 5` 的序关系。
-- `score` 回归头用于校准评分距离，缓解“预测 5 错成 4”和“预测 5 错成 0”惩罚相同的问题。
+- 默认架构为 `BERT_MODEL_ARCHITECTURE=multiclass`，输出 6 类评分 logits。
+- 训练目标使用 softmax CrossEntropy，并额外加入 expected-score 距离正则，缓解“预测 5 错成 4”和“预测 5 错成 0”惩罚相同的问题。
 - `BERT_MODEL_ARCHITECTURE=sequence` 保留旧 checkpoint 兼容路径。
 - 支持任意兼容的中文 BERT/RoBERTa 模型，只需修改 `BERT_MODEL_NAME`。
 
@@ -339,7 +332,7 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 → 构建 DataLoader（批量 tokenize via collate_fn）
 → 初始化 SentimentBertModel，AdamW
 → 使用 DistanceAwareOrdinalLoss（soft CE + expected-score distance）
-→ hybrid ordinal loss：class-balanced focal CE + ordinal BCE + SmoothL1 score distance
+→ multiclass loss：class-balanced focal CrossEntropy + SmoothL1 score distance
 → 混合精度训练循环（fp16/bf16）+ 梯度累积 + cosine warmup
 → 每 epoch 结束后在验证集评估 Accuracy / Macro-F1 / Weighted-F1 / MAE / RMSE / QWK / Spearman
 → 保存最优 checkpoint（默认基于 QWK）
@@ -354,7 +347,7 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 | 批量 tokenize | `collate_fn` 一次处理整批文本，避免逐条 tokenize |
 | 混合精度 | `torch.amp.GradScaler` + `autocast`，CUDA 下自动启用 |
 | 梯度累积 | `BERT_TRAIN_ACCUM_STEPS` 控制，小显存下模拟大 batch |
-| Hybrid ordinal loss | 分类、累计阈值、连续评分三头联合训练 |
+| Distance-aware multiclass loss | 6 类 softmax CE + 评分距离正则 |
 | Focal + class-balanced loss | `FOCAL_GAMMA`、`CLASS_BALANCED_BETA` 抑制多数类主导 |
 | Logit adjustment | `LOGIT_ADJUSTMENT_WEIGHT` 按类别先验修正偏置 |
 | 缺失类插值 | `BERT_INTERPOLATE_MISSING_LABELS=1` 为 score=2 等缺失档生成低权重 soft labels |
@@ -378,7 +371,7 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 - **QWK**：核心选模指标，适合 0-5 有序评分
 - **Spearman**：预测排序与真实评分排序的一致性
 
-采用与训练相同的 `bert_collate_fn`，并通过 hybrid 输出计算最终离散评分，保证评估和推理使用同一评分逻辑。
+采用与训练相同的 `bert_collate_fn`，并通过 6 类 softmax argmax 计算最终离散评分，保证评估和推理使用同一评分逻辑。
 
 ---
 
@@ -390,7 +383,7 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 bert_sentiment_model/
 ├── config.json          # HuggingFace 模型配置
 ├── pytorch_model.bin    # 模型权重（或 safetensors）
-├── sentiment_model_state.pt # hybrid 分类/ordinal/回归头完整权重
+├── sentiment_model_state.pt # multiclass 分类头完整权重
 ├── tokenizer_config.json
 ├── vocab.txt
 └── training_meta.json   # 训练元信息（max_len, model_name, architecture, QWK, MAE 等）
@@ -432,7 +425,7 @@ return train_model()
 }
 ```
 
-推理会保留 6 类 softmax 概率契约，同时用 classification expected score、ordinal threshold head 和 regression head 融合得到最终 0-5 分。可选优化：
+推理使用 6 类 softmax 概率，并通过 `argmax(dim=1)` 得到最终 0-5 分。可选优化：
 
 - `BERT_INFERENCE_BATCH_SIZE=64`：批量推理动态 padding。
 - `BERT_INFERENCE_TORCH_COMPILE=1`：启用 `torch.compile` 推理。
@@ -492,7 +485,7 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 | `BERT_FORCE_RETRAIN` | `0` | `1` = 忽略已有 checkpoint，强制重新训练 |
 | `BERT_TRAINING_STAGE` | `auto` | `teacher` / `student` / `legacy`；`auto` 有 teacher path 时走 student，否则走 teacher |
 | `BERT_RESUME_FROM_CHECKPOINT` | 空 | 从已有 BERT checkpoint 恢复模型权重，并尽量恢复 `trainer_state.pt` |
-| `BERT_MODEL_ARCHITECTURE` | `hybrid` | `hybrid` = 分类 + ordinal + 回归三头；`sequence` 仅用于旧 checkpoint 兼容 |
+| `BERT_MODEL_ARCHITECTURE` | `multiclass` | `multiclass` = 6 类 softmax 分类；`sequence` 仅用于旧 checkpoint 兼容 |
 | `BERT_SELECTION_METRIC` | `qwk` | 最优 checkpoint/早停选模指标，可设 `qwk` / `macro_f1` / `weighted_f1` / `mae` |
 
 ### 运行时参数
@@ -507,10 +500,10 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 | `BERT_TRAIN_LR` | `2e-5` | AdamW 学习率 |
 | `BERT_WEIGHT_DECAY` | `0.01` | AdamW weight decay |
 | `BERT_LAYERWISE_LR_DECAY` | `0.9` | backbone 层级学习率衰减 |
-| `BERT_HEAD_LR_MULTIPLIER` | `2.0` | 分类/ordinal/回归头学习率倍率 |
+| `BERT_HEAD_LR_MULTIPLIER` | `2.0` | 分类头学习率倍率 |
 | `BERT_SCHEDULER` | `cosine` | `cosine` / `linear` / `none` |
 | `BERT_WARMUP_RATIO` | `0.06` | scheduler warmup 比例 |
-| `BERT_TRAIN_WEIGHTED_LOSS` | `1` | `1` = 启用 class-weighted ordinal loss |
+| `BERT_TRAIN_WEIGHTED_LOSS` | `1` | `1` = 启用 class-weighted multiclass loss |
 | `BERT_GRADIENT_CHECKPOINTING` | `1` | `1` = 启用 backbone gradient checkpointing |
 | `BERT_MIXED_PRECISION` | `fp16` | `fp16` / `bf16` |
 | `BERT_USE_ACCELERATE` | `0` | `1` = 使用 HuggingFace Accelerate（需通过 accelerate launch 启动） |
@@ -523,8 +516,6 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 |------|--------|------|
 | `ORDINAL_CE_WEIGHT` | `1.0` | 6 类 soft CE 权重 |
 | `ORDINAL_DISTANCE_WEIGHT` | `0.35` | 期望评分 SmoothL1 距离损失权重 |
-| `ORDINAL_BCE_WEIGHT` | `0.5` | 累计阈值 BCE 权重 |
-| `ORDINAL_REGRESSION_WEIGHT` | `0.2` | 连续评分回归损失权重 |
 | `ORDINAL_LABEL_SMOOTHING` | `0.05` | 真实标签 smoothing |
 | `PSEUDO_LABEL_SMOOTHING` | `0.02` | 伪标签 smoothing |
 | `FOCAL_GAMMA` | `1.5` | focal loss gamma |
@@ -588,9 +579,6 @@ Student 训练读取 `probabilities` 作为 soft labels，并通过 `sample_weig
 |------|--------|------|
 | `BERT_INFERENCE_BATCH_SIZE` | `64` | BERT 批量推理 batch 大小 |
 | `BERT_INFERENCE_TEMPERATURE` | `1.0` | 推理 softmax temperature |
-| `BERT_INFERENCE_CLASS_WEIGHT` | `0.7` | hybrid 推理中分类期望分权重 |
-| `BERT_INFERENCE_ORDINAL_WEIGHT` | `0.2` | hybrid 推理中 ordinal head 权重 |
-| `BERT_INFERENCE_REGRESSION_WEIGHT` | `0.1` | hybrid 推理中回归头权重 |
 | `BERT_INFERENCE_TORCH_COMPILE` | `0` | 后端加载 BERT 后启用 `torch.compile` 推理 |
 | `BERT_DYNAMIC_QUANTIZATION` | `0` | CPU 推理时启用 Linear 动态 int8 量化 |
 

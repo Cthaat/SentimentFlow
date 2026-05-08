@@ -57,6 +57,11 @@ def load_model(
     state_dict = extract_state_dict(ckpt)
     state_dict = normalize_state_dict_keys(state_dict, rename_prefix=("fc.", "classifier."))
     num_classes = _infer_num_classes(state_dict, fallback=num_classes)
+    if num_classes != NUM_SENTIMENT_CLASSES:
+        raise RuntimeError(
+            f"Unsupported LSTM class count: {num_classes}. "
+            f"Expected {NUM_SENTIMENT_CLASSES}; retrain the model with the 0-5 score contract."
+        )
     model = SentimentLSTM(
         vocab_size=vocab_size,
         embed_dim=embed_dim,
@@ -89,16 +94,7 @@ def predict_batch(input_ids: List[List[int]]) -> Tuple[List[int], List[float], L
     logits = _model(tensor)
 
     probs = torch.softmax(logits, dim=-1)
-    if _loaded_num_classes == 2:
-        full_probs = torch.zeros(
-            (probs.shape[0], NUM_SENTIMENT_CLASSES),
-            dtype=probs.dtype,
-            device=probs.device,
-        )
-        full_probs[:, 0] = probs[:, 0]
-        full_probs[:, 5] = probs[:, 1]
-        probs = full_probs
-    elif _loaded_num_classes != NUM_SENTIMENT_CLASSES:
+    if _loaded_num_classes != NUM_SENTIMENT_CLASSES:
         raise RuntimeError(f"Unsupported LSTM class count: {_loaded_num_classes}")
 
     conf, pred = torch.max(probs, dim=-1)

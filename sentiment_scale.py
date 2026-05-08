@@ -19,6 +19,8 @@ SENTIMENT_LABELS: dict[int, str] = {
     4: "slightly_positive",
     5: "extremely_positive",
 }
+ID2LABEL: dict[int, str] = dict(SENTIMENT_LABELS)
+LABEL2ID: dict[str, int] = {label: score for score, label in ID2LABEL.items()}
 
 SENTIMENT_DISPLAY_LABELS: dict[int, str] = {
     0: "极端负面",
@@ -30,7 +32,7 @@ SENTIMENT_DISPLAY_LABELS: dict[int, str] = {
 }
 
 LABEL_TO_SCORE: dict[str, int] = {
-    **{label: score for score, label in SENTIMENT_LABELS.items()},
+    **LABEL2ID,
     "very_negative": 0,
     "negative": 1,
     "somewhat_negative": 2,
@@ -194,12 +196,8 @@ def _try_parse_number(value) -> float | None:
 
 def probabilities_to_prediction(probabilities: Sequence[float]) -> dict:
     """Convert model probabilities to the API/inference prediction contract.
-
-    Legacy 2-class checkpoints are mapped as 0 -> score 0 and 1 -> score 5.
     """
     probs = [float(value) for value in probabilities]
-    if len(probs) == 2:
-        probs = [probs[0], 0.0, 0.0, 0.0, 0.0, probs[1]]
     if len(probs) != NUM_SENTIMENT_CLASSES:
         raise ValueError(
             f"Expected {NUM_SENTIMENT_CLASSES} sentiment probabilities, got {len(probs)}."
@@ -239,8 +237,6 @@ def choose_score_from_binary_teacher_probabilities(
         raise ValueError(f"Invalid weak binary label {binary_label!r}. Expected 0 or 1.")
 
     probs = [float(value) for value in probabilities]
-    if len(probs) == 2:
-        probs = [probs[0], 0.0, 0.0, 0.0, 0.0, probs[1]]
     if len(probs) != NUM_SENTIMENT_CLASSES:
         raise ValueError(
             f"Expected {NUM_SENTIMENT_CLASSES} teacher probabilities, got {len(probs)}."

@@ -1,4 +1,4 @@
-"""Distance-aware ordinal losses for the 0-5 sentiment score task."""
+"""Distance-aware multiclass losses for the 0-5 sentiment score task."""
 
 from __future__ import annotations
 
@@ -13,12 +13,10 @@ from sentiment_scale import NUM_SENTIMENT_CLASSES
 
 @dataclass(frozen=True)
 class OrdinalLossConfig:
-    """Configuration for the distance-aware ordinal objective."""
+    """Configuration for the distance-aware multiclass objective."""
 
     ce_weight: float = 1.0
     distance_weight: float = 0.35
-    ordinal_weight: float = 0.5
-    regression_weight: float = 0.2
     label_smoothing: float = 0.05
     pseudo_label_smoothing: float = 0.02
     focal_gamma: float = 1.5
@@ -26,13 +24,11 @@ class OrdinalLossConfig:
 
 
 class DistanceAwareOrdinalLoss(nn.Module):
-    """Hybrid ordinal objective for the 0-5 sentiment score task.
+    """Multiclass softmax objective for the 0-5 sentiment score task.
 
     Components:
-    - class-balanced focal soft CE for discrete score probabilities;
-    - expected-score SmoothL1 for ordinal distance awareness;
-    - cumulative threshold BCE for CORAL/CORN-style ordinal supervision;
-    - scalar score regression SmoothL1 for calibration.
+    - class-balanced focal CrossEntropy/soft CE for 6 score classes;
+    - expected-score SmoothL1 for distance-aware scoring.
     """
 
     def __init__(
@@ -72,27 +68,32 @@ class DistanceAwareOrdinalLoss(nn.Module):
         soft_labels: torch.Tensor | None = None,
         sample_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        ordinal_logits = None
-        score_prediction = None
         if isinstance(logits, dict):
             outputs = logits
             logits = outputs["logits"]
-            ordinal_logits = outputs.get("ordinal_logits")
-            score_prediction = outputs.get("score")
 
         labels = labels.long()
         target_probs = self._build_targets(labels, soft_labels)
         adjusted_logits = self._adjust_logits(logits)
 
-        log_probs = F.log_softmax(adjusted_logits, dim=1)
         probs = torch.softmax(adjusted_logits, dim=1)
-        ce_per_sample = -(target_probs * log_probs).sum(dim=1)
+        if soft_labels is None:
+            ce_per_sample = F.cross_entropy(
+                adjusted_logits,
+                labels,
+                weight=self.class_weights.to(logits.device) if self.class_weights is not None else None,
+                reduction="none",
+                label_smoothing=max(0.0, float(self.config.label_smoothing)),
+            )
+        else:
+            log_probs = F.log_softmax(adjusted_logits, dim=1)
+            ce_per_sample = -(target_probs * log_probs).sum(dim=1)
+            if self.class_weights is not None:
+                class_weight_per_sample = (target_probs * self.class_weights.to(logits.device)).sum(dim=1)
+                ce_per_sample = ce_per_sample * class_weight_per_sample
         if self.config.focal_gamma > 0:
             target_confidence = (target_probs * probs).sum(dim=1).clamp(1e-6, 1.0)
             ce_per_sample = ce_per_sample * (1.0 - target_confidence).pow(self.config.focal_gamma)
-        if self.class_weights is not None:
-            class_weight_per_sample = (target_probs * self.class_weights.to(logits.device)).sum(dim=1)
-            ce_per_sample = ce_per_sample * class_weight_per_sample
 
         score_values = self.score_values.to(logits.device)
         predicted_score = (probs * score_values).sum(dim=1)
@@ -103,22 +104,6 @@ class DistanceAwareOrdinalLoss(nn.Module):
             self.config.ce_weight * ce_per_sample
             + self.config.distance_weight * distance_per_sample
         )
-        if ordinal_logits is not None and self.config.ordinal_weight > 0:
-            cumulative_targets = self._cumulative_targets(target_probs)
-            ordinal_loss = F.binary_cross_entropy_with_logits(
-                ordinal_logits,
-                cumulative_targets,
-                reduction="none",
-            ).mean(dim=1)
-            loss_per_sample = loss_per_sample + self.config.ordinal_weight * ordinal_loss
-
-        if score_prediction is not None and self.config.regression_weight > 0:
-            score_loss = F.smooth_l1_loss(
-                score_prediction.float(),
-                target_score.to(score_prediction.device).float(),
-                reduction="none",
-            )
-            loss_per_sample = loss_per_sample + self.config.regression_weight * score_loss
 
         if sample_weights is not None:
             loss_per_sample = loss_per_sample * sample_weights.to(logits.device).float()
@@ -129,13 +114,6 @@ class DistanceAwareOrdinalLoss(nn.Module):
             return logits
         adjustment = self.logit_adjustment.to(logits.device)
         return logits - self.config.logit_adjustment_weight * adjustment
-
-    def _cumulative_targets(self, target_probs: torch.Tensor) -> torch.Tensor:
-        # Threshold k learns P(score > k), k=0..4.
-        cumulative = []
-        for threshold in range(self.num_classes - 1):
-            cumulative.append(target_probs[:, threshold + 1 :].sum(dim=1))
-        return torch.stack(cumulative, dim=1)
 
     def _build_targets(
         self,

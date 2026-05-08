@@ -28,6 +28,19 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 
+BERT_REAL_MULTICLASS_DATASETS = {
+    "BerlinWang/DMSC",
+    "dirtycomputer/JD_review",
+}
+BERT_BINARY_PSEUDO_DATASETS = {
+    "lansinuote/ChnSentiCorp",
+    "XiangPan/waimai_10k",
+    "dirtycomputer/weibo_senti_100k",
+    "ndiy/NLPCC14-SC",
+    "dirtycomputer/ChnSentiCorp_htl_all",
+}
+
+
 @dataclass
 class TrainingProgress:
     stage: str = "queued"
@@ -186,6 +199,10 @@ class TrainingManager:
 
         # 将用户配置写入环境变量（仅影响当前线程的子进程）
         env_updates = {key: str(value) for key, value in job.config.items()}
+        if job.model_type == "bert":
+            selection_log = _apply_bert_dataset_selection(env_updates)
+            if selection_log:
+                job.logs.append(f"[INFO] {selection_log}")
 
         # 创建带时间戳的模型保存路径，统一放到 models/ 目录下
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -415,3 +432,51 @@ def _temporary_env(updates: dict[str, str]):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old_value
+
+
+def _split_dataset_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _apply_bert_dataset_selection(env_updates: dict[str, str]) -> str | None:
+    """Map frontend-selected BERT datasets to the env vars each training stage reads."""
+    selected = _split_dataset_list(env_updates.get("BERT_TRAIN_DATASETS"))
+    if not selected:
+        return None
+
+    env_updates["BERT_SELECTED_DATASETS"] = ",".join(selected)
+    stage = env_updates.get("BERT_TRAINING_STAGE", os.getenv("BERT_TRAINING_STAGE", "auto")).strip().lower()
+    real_selected = [name for name in selected if name in BERT_REAL_MULTICLASS_DATASETS]
+    pseudo_selected = [name for name in selected if name in BERT_BINARY_PSEUDO_DATASETS]
+    directly_trainable = [
+        name
+        for name in selected
+        if name not in BERT_REAL_MULTICLASS_DATASETS and name not in BERT_BINARY_PSEUDO_DATASETS
+    ]
+
+    if stage == "teacher":
+        if real_selected and not directly_trainable and not pseudo_selected:
+            env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
+        else:
+            env_updates["BERT_TRAINING_STAGE"] = "legacy"
+            stage = "legacy"
+    elif stage == "student":
+        if real_selected:
+            env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
+        if pseudo_selected:
+            env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected)
+        if directly_trainable:
+            env_updates["BERT_TRAINING_STAGE"] = "legacy"
+            stage = "legacy"
+    elif stage == "auto":
+        env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected) if real_selected else ""
+        env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected) if pseudo_selected else ""
+
+    env_updates["BERT_TRAIN_DATASETS"] = ",".join(selected)
+    return (
+        "BERT dataset selection: "
+        f"stage={stage}, selected={selected}, real={real_selected}, "
+        f"pseudo={pseudo_selected}, direct={directly_trainable}"
+    )

@@ -57,6 +57,19 @@ const DATASET_OPTIONS = [
   { value: "ttxy/online_shopping_10_cats", label: "Online Shopping 10 Cats" },
 ];
 
+const BERT_REAL_MULTICLASS_DATASETS = new Set([
+  "BerlinWang/DMSC",
+  "dirtycomputer/JD_review",
+]);
+
+const BERT_BINARY_PSEUDO_DATASETS = new Set([
+  "lansinuote/ChnSentiCorp",
+  "XiangPan/waimai_10k",
+  "dirtycomputer/weibo_senti_100k",
+  "ndiy/NLPCC14-SC",
+  "dirtycomputer/ChnSentiCorp_htl_all",
+]);
+
 const LSTM_DEFAULTS: Record<string, string> = {
   EPOCHS: "25",
   TRAIN_BATCH_SIZE: "512",
@@ -86,8 +99,6 @@ const BERT_DEFAULTS: Record<string, string> = {
   PSEUDO_LABEL_TEMPERATURE: "1.5",
   PSEUDO_LABEL_WEIGHT: "0.3",
   ORDINAL_DISTANCE_WEIGHT: "0.35",
-  ORDINAL_BCE_WEIGHT: "0.5",
-  ORDINAL_REGRESSION_WEIGHT: "0.2",
   ORDINAL_LABEL_SMOOTHING: "0.05",
   PSEUDO_LABEL_SMOOTHING: "0.02",
   FOCAL_GAMMA: "1.5",
@@ -222,6 +233,9 @@ export function TrainingPanel() {
       ...params,
       [datasetKey]: selectedDatasets.join(","),
     };
+    if (modelType === "bert") {
+      applyBertDatasetSelection(config, selectedDatasets);
+    }
 
     try {
       const res = await fetch("/api/training/start", {
@@ -654,6 +668,50 @@ function getErrorMessage(data: unknown): string {
 
 function isTerminalStatus(status: string): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function applyBertDatasetSelection(config: Record<string, string>, selectedDatasets: string[]): void {
+  const selected = selectedDatasets.filter(Boolean);
+  config.BERT_SELECTED_DATASETS = selected.join(",");
+  config.BERT_TRAIN_DATASETS = selected.join(",");
+
+  const stage = (config.BERT_TRAINING_STAGE || "auto").trim().toLowerCase();
+  const realSelected = selected.filter((name) => BERT_REAL_MULTICLASS_DATASETS.has(name));
+  const pseudoSelected = selected.filter((name) => BERT_BINARY_PSEUDO_DATASETS.has(name));
+  const directSelected = selected.filter(
+    (name) => !BERT_REAL_MULTICLASS_DATASETS.has(name) && !BERT_BINARY_PSEUDO_DATASETS.has(name)
+  );
+
+  if (stage === "teacher") {
+    if (realSelected.length > 0 && pseudoSelected.length === 0 && directSelected.length === 0) {
+      config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    } else {
+      config.BERT_TRAINING_STAGE = "legacy";
+    }
+    return;
+  }
+
+  if (stage === "student") {
+    if (realSelected.length > 0) {
+      config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    }
+    if (pseudoSelected.length > 0) {
+      config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
+    }
+    if (directSelected.length > 0) {
+      config.BERT_TRAINING_STAGE = "legacy";
+    }
+    return;
+  }
+
+  if (stage === "auto") {
+    if (realSelected.length > 0) {
+      config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    }
+    if (pseudoSelected.length > 0) {
+      config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
+    }
+  }
 }
 
 function getConnectionText(state: "idle" | "connecting" | "live" | "polling" | "closed"): string {

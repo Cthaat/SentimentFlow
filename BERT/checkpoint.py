@@ -101,14 +101,19 @@ def load_checkpoint(checkpoint_path: str, device: torch.device):
         pass
 
     state_path = save_dir / "sentiment_model_state.pt"
-    if architecture == "hybrid" and state_path.exists():
+    if architecture in {"hybrid", "multiclass"} and state_path.exists():
         model = SentimentBertModel(
             model_name=str(save_dir),
             num_labels=NUM_SENTIMENT_CLASSES,
-            architecture="hybrid",
+            architecture="multiclass",
         ).to(device)
         state_dict = torch.load(state_path, map_location=device)
-        model.load_state_dict(state_dict, strict=True)
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            print(
+                "Loaded multiclass checkpoint with compatible subset: "
+                f"missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}"
+            )
     else:
         model = SentimentBertModel(
             model_name=str(save_dir),

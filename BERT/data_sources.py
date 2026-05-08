@@ -489,9 +489,37 @@ def _pseudo_label_path() -> Path:
     return Path(os.getenv("PSEUDO_LABEL_PATH", "pseudo_labels.jsonl")).expanduser()
 
 
+def _dataset_names_from_env(raw: str) -> list[str]:
+    return [_resolve_dataset_name(item.strip()) for item in raw.split(",") if item.strip()]
+
+
+def _selected_dataset_names() -> list[str]:
+    raw = os.getenv("BERT_SELECTED_DATASETS", "").strip() or os.getenv("BERT_TRAIN_DATASETS", "").strip()
+    return _dataset_names_from_env(raw) if raw else []
+
+
 def _teacher_dataset_names() -> list[str]:
-    raw = os.getenv("BERT_TEACHER_DATASETS", ",".join(REAL_MULTICLASS_DATASETS))
-    requested = [_resolve_dataset_name(item.strip()) for item in raw.split(",") if item.strip()]
+    raw = os.getenv("BERT_TEACHER_DATASETS", "").strip()
+    if raw:
+        requested = _dataset_names_from_env(raw)
+    else:
+        selected = _selected_dataset_names()
+        if selected:
+            requested = [name for name in selected if name in REAL_MULTICLASS_DATASETS]
+            ignored = [name for name in selected if name not in REAL_MULTICLASS_DATASETS]
+            if ignored:
+                print(
+                    "Teacher stage ignores non-real-multiclass selected datasets: "
+                    f"{ignored}. Use BERT_TRAINING_STAGE=legacy to train directly on them."
+                )
+            if not requested:
+                raise ValueError(
+                    "No teacher-compatible datasets selected. "
+                    f"Teacher stage only supports {REAL_MULTICLASS_DATASETS}; "
+                    "switch BERT_TRAINING_STAGE to legacy or select DMSC/JD_review."
+                )
+        else:
+            requested = list(REAL_MULTICLASS_DATASETS)
     invalid = [name for name in requested if name not in REAL_MULTICLASS_DATASETS]
     if invalid:
         raise ValueError(
@@ -502,8 +530,31 @@ def _teacher_dataset_names() -> list[str]:
 
 
 def _binary_pseudo_dataset_names() -> list[str]:
-    raw = os.getenv("BERT_BINARY_PSEUDO_DATASETS", ",".join(BINARY_PSEUDO_DATASETS))
-    requested = [_resolve_dataset_name(item.strip()) for item in raw.split(",") if item.strip()]
+    raw = os.getenv("BERT_BINARY_PSEUDO_DATASETS", "").strip()
+    if raw:
+        requested = _dataset_names_from_env(raw)
+    else:
+        selected = _selected_dataset_names()
+        if selected:
+            requested = [name for name in selected if name in BINARY_PSEUDO_DATASETS]
+            ignored = [
+                name
+                for name in selected
+                if name not in BINARY_PSEUDO_DATASETS and name not in REAL_MULTICLASS_DATASETS
+            ]
+            if ignored:
+                print(
+                    "Student pseudo-label stage ignores non-binary selected datasets: "
+                    f"{ignored}. Use BERT_TRAINING_STAGE=legacy to train directly on them."
+                )
+            if not requested:
+                raise ValueError(
+                    "No binary pseudo-label datasets selected. "
+                    f"Student pseudo-label stage supports {BINARY_PSEUDO_DATASETS}; "
+                    "switch BERT_TRAINING_STAGE to legacy or select binary source datasets."
+                )
+        else:
+            requested = list(BINARY_PSEUDO_DATASETS)
     invalid = [name for name in requested if name not in BINARY_PSEUDO_DATASETS]
     if invalid:
         raise ValueError(

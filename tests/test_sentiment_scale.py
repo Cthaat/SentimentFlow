@@ -23,6 +23,7 @@ from training.data_sources import (
     _normalize_short_sentence_labels,
 )
 from BERT.data_sources import (
+    _binary_pseudo_dataset_names,
     _load_pseudo_label_split,
     _normalize_short_sentence_labels as _normalize_bert_short_sentence_labels,
     _infer_teacher_num_labels,
@@ -49,12 +50,14 @@ class SentimentScaleContractTest(unittest.TestCase):
         self.assertEqual(coerce_sentiment_score(3, dataset_name="BerlinWang/DMSC", label_col="Star"), 3)
         self.assertEqual(coerce_sentiment_score(5, dataset_name="BerlinWang/DMSC", label_col="Star"), 5)
 
-    def test_probabilities_support_legacy_two_class_checkpoints(self) -> None:
-        result = probabilities_to_prediction([0.2, 0.8])
+    def test_probabilities_require_six_score_classes(self) -> None:
+        with self.assertRaises(ValueError):
+            probabilities_to_prediction([0.2, 0.8])
+
+        result = probabilities_to_prediction([0.05, 0.05, 0.05, 0.05, 0.1, 0.7])
         self.assertEqual(result["score"], 5)
         self.assertEqual(len(result["probabilities"]), NUM_SENTIMENT_CLASSES)
-        self.assertAlmostEqual(result["probabilities"][0], 0.2)
-        self.assertAlmostEqual(result["probabilities"][5], 0.8)
+        self.assertAlmostEqual(result["probabilities"][5], 0.7)
 
     def test_metrics_include_multiclass_and_ordinal_values(self) -> None:
         metrics = compute_classification_metrics([0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5])
@@ -242,8 +245,6 @@ class TrainingSmokeTest(unittest.TestCase):
 
     def test_distance_aware_ordinal_loss_supports_soft_labels_and_weights(self) -> None:
         logits = torch.randn(3, NUM_SENTIMENT_CLASSES, requires_grad=True)
-        ordinal_logits = torch.randn(3, NUM_SENTIMENT_CLASSES - 1, requires_grad=True)
-        score = torch.randn(3, requires_grad=True)
         labels = torch.tensor([0, 3, 5], dtype=torch.long)
         soft_labels = torch.tensor(
             [
@@ -256,7 +257,7 @@ class TrainingSmokeTest(unittest.TestCase):
         sample_weights = torch.tensor([1.0, 0.3, 0.3], dtype=torch.float32)
 
         loss = DistanceAwareOrdinalLoss()(
-            {"logits": logits, "ordinal_logits": ordinal_logits, "score": score},
+            {"logits": logits},
             labels,
             soft_labels=soft_labels,
             sample_weights=sample_weights,
@@ -264,37 +265,18 @@ class TrainingSmokeTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss))
         loss.backward()
         self.assertIsNotNone(logits.grad)
-        self.assertIsNotNone(ordinal_logits.grad)
-        self.assertIsNotNone(score.grad)
 
-    def test_hybrid_outputs_use_ordinal_score_for_prediction(self) -> None:
-        previous_env = {
-            "BERT_INFERENCE_CLASS_WEIGHT": os.environ.get("BERT_INFERENCE_CLASS_WEIGHT"),
-            "BERT_INFERENCE_ORDINAL_WEIGHT": os.environ.get("BERT_INFERENCE_ORDINAL_WEIGHT"),
-            "BERT_INFERENCE_REGRESSION_WEIGHT": os.environ.get("BERT_INFERENCE_REGRESSION_WEIGHT"),
-        }
+    def test_multiclass_outputs_use_softmax_argmax_for_prediction(self) -> None:
         outputs = {
-            "logits": torch.tensor([[0.1, 0.1, 0.1, 5.0, 0.1, 0.1]], dtype=torch.float32),
-            "ordinal_logits": torch.tensor([[5.0, 5.0, 5.0, 5.0, -5.0]], dtype=torch.float32),
-            "score": torch.tensor([4.2], dtype=torch.float32),
+            "logits": torch.tensor([[0.1, 0.1, 0.1, 5.0, 0.2, 0.1]], dtype=torch.float32),
         }
-        try:
-            os.environ["BERT_INFERENCE_CLASS_WEIGHT"] = "0.1"
-            os.environ["BERT_INFERENCE_ORDINAL_WEIGHT"] = "0.6"
-            os.environ["BERT_INFERENCE_REGRESSION_WEIGHT"] = "0.3"
-            pred = predicted_classes_from_outputs(outputs)
-            self.assertEqual(pred.tolist(), [4])
-            prediction = outputs_to_predictions(outputs)[0]
-            self.assertEqual(prediction["score"], 4)
-            self.assertEqual(len(prediction["probabilities"]), NUM_SENTIMENT_CLASSES)
-        finally:
-            for key, value in previous_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+        pred = predicted_classes_from_outputs(outputs)
+        self.assertEqual(pred.tolist(), [3])
+        prediction = outputs_to_predictions(outputs)[0]
+        self.assertEqual(prediction["score"], 3)
+        self.assertEqual(len(prediction["probabilities"]), NUM_SENTIMENT_CLASSES)
 
-    def test_hybrid_teacher_num_labels_detects_custom_classifier_head(self) -> None:
+    def test_multiclass_teacher_num_labels_detects_custom_classifier_head(self) -> None:
         class DummyTeacher(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -335,6 +317,28 @@ class TrainingSmokeTest(unittest.TestCase):
                 os.environ.pop("BERT_TEACHER_DATASETS", None)
             else:
                 os.environ["BERT_TEACHER_DATASETS"] = previous
+
+    def test_bert_selected_datasets_filter_stage_specific_sources(self) -> None:
+        previous = {
+            "BERT_TRAIN_DATASETS": os.environ.get("BERT_TRAIN_DATASETS"),
+            "BERT_SELECTED_DATASETS": os.environ.get("BERT_SELECTED_DATASETS"),
+            "BERT_TEACHER_DATASETS": os.environ.get("BERT_TEACHER_DATASETS"),
+            "BERT_BINARY_PSEUDO_DATASETS": os.environ.get("BERT_BINARY_PSEUDO_DATASETS"),
+        }
+        try:
+            os.environ["BERT_TRAIN_DATASETS"] = "BerlinWang/DMSC,XiangPan/waimai_10k,ttxy/online_shopping_10_cats"
+            os.environ.pop("BERT_SELECTED_DATASETS", None)
+            os.environ.pop("BERT_TEACHER_DATASETS", None)
+            os.environ.pop("BERT_BINARY_PSEUDO_DATASETS", None)
+
+            self.assertEqual(_teacher_dataset_names(), ["BerlinWang/DMSC"])
+            self.assertEqual(_binary_pseudo_dataset_names(), ["XiangPan/waimai_10k"])
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_real_and_pseudo_splits_have_compatible_bert_training_schema(self) -> None:
         real = Dataset.from_dict({"text": ["很差"], "label": [1], "_sf_label_source": ["normalized"]})
