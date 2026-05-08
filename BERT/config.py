@@ -5,6 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+# 抑制 HF Hub 后台线程请求和 safetensors 自动转换
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
+
 
 MAX_LEN = int(os.getenv("BERT_MODEL_MAX_LEN", "128"))
 EPOCHS = int(os.getenv("BERT_EPOCHS", "5"))
@@ -12,6 +19,21 @@ DEFAULT_CHUNK_SIZE = 4096
 CHECKPOINT_PATH = os.getenv("BERT_CHECKPOINT_PATH", "./bert_sentiment_model")
 BERT_CHECKPOINT_PATH = CHECKPOINT_PATH
 BERT_MODEL_NAME = os.getenv("BERT_MODEL_NAME", "hfl/chinese-roberta-wwm-ext")
+
+
+def get_checkpoint_path() -> str:
+    """运行时读取 checkpoint 路径，避免 API 动态配置被 import 缓存吞掉。"""
+    return os.getenv("BERT_CHECKPOINT_PATH", CHECKPOINT_PATH)
+
+
+def get_epochs() -> int:
+    """运行时读取训练轮数。"""
+    return int(os.getenv("BERT_EPOCHS", str(EPOCHS)))
+
+
+def get_model_name() -> str:
+    """运行时读取 BERT 模型名称。"""
+    return os.getenv("BERT_MODEL_NAME", BERT_MODEL_NAME)
 
 
 @dataclass(frozen=True)

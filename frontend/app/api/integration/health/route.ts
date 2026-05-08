@@ -1,47 +1,45 @@
 import { NextResponse } from "next/server";
+import { proxyToBackend } from "@/lib/api-proxy";
 
-const configuredBase = process.env.BACKEND_API_URL || process.env.NEXT_SERVER_API_BASE_URL;
-const fallbackBases = ["http://backend:8000", "http://localhost:8000"];
+const HEALTH_TOTAL_TIMEOUT_MS = 8000;
+const HEALTH_ATTEMPT_TIMEOUT_MS = 1500;
+const HEALTH_RETRY_DELAY_MS = 500;
 
-async function requestHealth() {
-	const baseCandidates = configuredBase ? [configuredBase] : fallbackBases;
-	let lastError: unknown = null;
-
-	for (const base of baseCandidates) {
-		try {
-			const response = await fetch(`${base}/health`, {
-				method: "GET",
-				cache: "no-store",
-			});
-			const data = await response.json();
-			return { base, response, data };
-		} catch (error) {
-			lastError = error;
-		}
-	}
-
-	throw lastError || new Error("Backend is unreachable");
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function GET() {
-	try {
-		const { base, response, data } = await requestHealth();
-		return NextResponse.json(
-			{
-				ok: response.ok,
-				upstreamStatus: response.status,
-				baseUrl: base,
-				payload: data,
-			},
-			{ status: response.ok ? 200 : 502 },
-		);
-	} catch (error) {
-		return NextResponse.json(
-			{
-				ok: false,
-				error: error instanceof Error ? error.message : "Unknown error",
-			},
-			{ status: 500 },
-		);
-	}
+  const deadline = Date.now() + HEALTH_TOTAL_TIMEOUT_MS;
+  let lastError: unknown = null;
+
+  while (Date.now() < deadline) {
+    try {
+      const { response, baseUrl } = await proxyToBackend(
+        "/health",
+        { cache: "no-store" },
+        HEALTH_ATTEMPT_TIMEOUT_MS,
+      );
+      const data = await response.json();
+      return NextResponse.json(
+        { ok: response.ok, upstreamStatus: response.status, baseUrl, payload: data },
+        { status: response.ok ? 200 : response.status },
+      );
+    } catch (error) {
+      lastError = error;
+      if (Date.now() + HEALTH_RETRY_DELAY_MS >= deadline) {
+        break;
+      }
+      await sleep(HEALTH_RETRY_DELAY_MS);
+    }
+  }
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: lastError instanceof Error ? lastError.message : "Backend is still starting or unreachable",
+      hint: "后端可能仍在启动或正忙，稍后重试即可。",
+    },
+    { status: 200 },
+  );
 }

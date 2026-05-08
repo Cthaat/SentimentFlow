@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
+import threading
 from copy import deepcopy
 from pathlib import Path
 
@@ -20,7 +22,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .checkpoint import save_checkpoint
-from .config import CHECKPOINT_PATH, EPOCHS, MAX_LEN, VOCAB_SIZE, get_runtime_settings
+from .config import MAX_LEN, VOCAB_SIZE, get_checkpoint_path, get_epochs, get_runtime_settings
 from .data_sources import build_train_split_and_val_split, get_label_distribution
 from .dataset import CsvStreamDataset
 from .evaluate import evaluate
@@ -98,7 +100,7 @@ def _build_loss_fn(neg_count: int, pos_count: int, total_count: int, settings, d
     return nn.CrossEntropyLoss()
 
 
-def train_model():
+def train_model(cancel_event: threading.Event | None = None):
     """执行完整训练，返回最优模型和设备。"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
@@ -112,6 +114,9 @@ def train_model():
             torch.set_float32_matmul_precision("high")
 
     settings = get_runtime_settings(device.type)
+    epochs = get_epochs()
+    checkpoint_path = get_checkpoint_path()
+    log_interval = max(1, int(os.getenv("TRAIN_LOG_INTERVAL", "20")))
     dataset_names, train_split, val_split, label_map = build_train_split_and_val_split()
     train_size = len(train_split)
     val_size = len(val_split)
@@ -130,11 +135,14 @@ def train_model():
     print(
         f"Training config: batch_size={settings.batch_size}, "
         f"grad_accum_steps={settings.grad_accum_steps}, num_workers={settings.num_workers}, "
+        f"epochs={epochs}, "
+        f"log_interval={log_interval}, "
         f"early_stop_patience={settings.early_stop_patience}, "
         f"early_stop_min_delta={settings.early_stop_min_delta}"
     )
 
     loader = _build_train_loader(train_split, settings, device, label_map)
+    estimated_batches = max(1, math.ceil(train_size / settings.batch_size))
 
     model = SentimentLSTMModel(VOCAB_SIZE).to(device)
     loss_fn = _build_loss_fn(neg_count, pos_count, total_count, settings, device)
@@ -149,13 +157,21 @@ def train_model():
 
     # 训练循环：每个 epoch 迭代训练数据，计算损失，进行反向传播和优化器更新。每个 epoch 结束后在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
     model.train()
-    for epoch in range(EPOCHS):
+    for epoch in range(epochs):
+        if cancel_event is not None and cancel_event.is_set():
+            print("Training cancelled before next epoch.")
+            break
+
         total_loss = torch.zeros((), device=device)
         batch_count = 0
         step = 0
         optimizer.zero_grad(set_to_none=True)
 
         for step, (batch_x, batch_y) in enumerate(loader, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                print("Training cancellation requested; stopping current epoch.")
+                break
+
             batch_count += 1
             # 将输入数据移动到设备（GPU 或 CPU），并启用 AMP 上下文以使用混合精度计算。计算模型输出和损失，并根据 grad_accum_steps 进行梯度累积和优化器更新。
             batch_x = batch_x.to(device, non_blocking=True)
@@ -184,6 +200,13 @@ def train_model():
             # 累积损失以计算平均损失值，便于在日志中输出。每个 epoch 结束后，在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
             total_loss += loss.detach()
 
+            if step == 1 or step % log_interval == 0:
+                step_loss = (loss.detach() * settings.grad_accum_steps).item()
+                print(
+                    f"Epoch {epoch + 1}/{epochs}, Step {step}/{estimated_batches}, "
+                    f"Loss: {step_loss:.4f}"
+                )
+
         if batch_count > 0 and step % settings.grad_accum_steps != 0:
             if scaler.is_enabled():
                 scaler.step(optimizer)
@@ -191,6 +214,9 @@ def train_model():
             else:
                 optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+
+        if cancel_event is not None and cancel_event.is_set():
+            break
 
         # 在验证集上评估模型性能，计算 Accuracy 和 Macro-F1 指标。根据 Macro-F1 指标判断是否更新最优模型，并实现早停逻辑以避免过拟合。
         val_acc, val_f1 = evaluate(
@@ -214,7 +240,7 @@ def train_model():
             best_state_dict = deepcopy(model.state_dict())
             no_improve_epochs = 0
             save_checkpoint(
-                checkpoint_path=CHECKPOINT_PATH,
+                checkpoint_path=checkpoint_path,
                 model=model,
                 max_len=MAX_LEN,
                 vocab_size=VOCAB_SIZE,
@@ -241,5 +267,7 @@ def train_model():
         model.load_state_dict(best_state_dict)
         print(f"Loaded best in-memory checkpoint from epoch {best_epoch}, ValMacroF1={best_f1:.4f}")
 
-    print(f"Training finished. Best model saved to {CHECKPOINT_PATH}")
+    if cancel_event is not None and cancel_event.is_set():
+        print("Training cancelled.")
+    print(f"Training finished. Best model saved to {checkpoint_path}")
     return model, device

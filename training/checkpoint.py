@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -21,15 +22,30 @@ def save_checkpoint(
     """保存模型参数和关键元信息。"""
     checkpoint_file = Path(checkpoint_path)
     checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+
+    best_val_f1 = round(best_val_f1, 6)
+
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "max_len": max_len,
             "vocab_size": vocab_size,
-            "best_val_f1": round(best_val_f1, 6),
+            "best_val_f1": best_val_f1,
             "best_epoch": best_epoch,
         },
         checkpoint_file,
+    )
+
+    # 同时保存轻量元信息文件，供模型管理 API 快速读取
+    meta_path = checkpoint_file.parent / "training_meta.json"
+    meta_path.write_text(
+        json.dumps({
+            "max_len": max_len,
+            "vocab_size": vocab_size,
+            "best_val_f1": best_val_f1,
+            "best_epoch": best_epoch,
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
 
 

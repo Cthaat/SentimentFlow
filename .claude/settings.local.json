@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --no-install next lint)",
+      "Bash(npx -p typescript tsc --noEmit --pretty)",
+      "Bash(npx -p typescript tsc -p c:/Code/SentimentFlow/frontend/tsconfig.json --noEmit)",
+      "Bash(python -c ' *)",
+      "Bash(timeout 5 python -c ' *)"
+    ]
+  }
+}

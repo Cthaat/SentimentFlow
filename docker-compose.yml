@@ -2,17 +2,23 @@ version: "3.9"
 services:
     backend:
         build: ./backend
+        working_dir: /workspace/backend
         env_file:
             - ./.env
+        environment:
+            SENTIMENTFLOW_PROJECT_ROOT: /workspace
         ports:
             - "8000:8000"
         volumes:
-            - ./backend:/app
+            - ./:/workspace
         command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
     frontend:
         image: node:20
         working_dir: /app
+        environment:
+            BACKEND_API_URL: http://backend:8000
+            BACKEND_API_TIMEOUT_MS: 10000
         ports:
             - "3000:3000"
         volumes:

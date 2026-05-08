@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
-from app.core.config import ensure_backend_env_loaded, get_predict_model_type
+from app.core.config import ensure_backend_env_loaded, get_active_model_config, get_predict_model_type
+from app.core.paths import get_models_dir, normalize_lstm_model_dir
 from app.models.BERT import predict_text as predict_text_with_bert_model
 from app.models.LSTM import load_model as load_lstm_model
 from app.models.LSTM import predict_batch as predict_batch_with_lstm_model
@@ -52,6 +54,8 @@ class PredictResult:
 	score: float
 	# 结果来源：用于区分规则基线或模型推理。
 	source: str
+	# 模型名称：当前使用的模型标识。
+	model_name: str = ""
 
 
 def _keyword_baseline(text: str) -> PredictResult:
@@ -69,20 +73,25 @@ def _keyword_baseline(text: str) -> PredictResult:
 
 	# 没有明显情绪词时返回中性结果。
 	if pos_hits == 0 and neg_hits == 0:
-		return PredictResult(text=text, label="中性", score=0.5, source="keyword-baseline")
+		return PredictResult(text=text, label="中性", score=0.5, source="keyword-baseline", model_name="关键词基线")
 	# 正向命中不小于负向命中，判为正面。
 	if pos_hits >= neg_hits:
 		score = min(0.55 + 0.1 * (pos_hits - neg_hits + 1), 0.99)
-		return PredictResult(text=text, label="正面", score=round(score, 4), source="keyword-baseline")
+		return PredictResult(text=text, label="正面", score=round(score, 4), source="keyword-baseline", model_name="关键词基线")
 
 	# 否则判为负面。
 	score = min(0.55 + 0.1 * (neg_hits - pos_hits + 1), 0.99)
-	return PredictResult(text=text, label="负面", score=round(score, 4), source="keyword-baseline")
+	return PredictResult(text=text, label="负面", score=round(score, 4), source="keyword-baseline", model_name="关键词基线")
 
 
 def _predict_with_lstm(text: str) -> PredictResult:
 	"""LSTM 推理分支。"""
-	model_path = os.getenv("MODEL_PATH", "./app/models/sentiment_model.pt")
+	model_path = os.getenv("MODEL_PATH", "")
+	# 兼容目录路径：自动查找其中的 .pt 文件
+	p = Path(model_path)
+	if p.is_dir():
+		pt_files = sorted(p.glob("*.pt"))
+		model_path = str(pt_files[0]) if pt_files else model_path
 	vocab_size = int(os.getenv("MODEL_VOCAB_SIZE", "65536"))
 	max_len = int(os.getenv("MODEL_MAX_LEN", "100"))
 	# 与根目录旧训练脚本默认结构保持一致。
@@ -108,18 +117,84 @@ def _predict_with_lstm(text: str) -> PredictResult:
 	score = confs[0]
 	label = "正面" if pred == 1 else "负面"
 
-	return PredictResult(text=text, label=label, score=round(float(score), 4), source="lstm")
+	model_dir = Path(model_path).parent.name if Path(model_path).parent.name.startswith("lstm_") else Path(model_path).stem
+	return PredictResult(text=text, label=label, score=round(float(score), 4), source="lstm", model_name=model_dir)
 
 
 def _predict_with_bert(text: str) -> PredictResult:
 	"""BERT 推理分支。"""
 	result = predict_text_with_bert_model(text)
+	model_name = Path(os.getenv("BERT_CHECKPOINT_PATH", "")).name
 	return PredictResult(
 		text=result["text"],
 		label=result["label"],
 		score=round(float(result["confidence"]), 4),
 		source="bert",
+		model_name=model_name,
 	)
+
+
+def _get_models_dir() -> Path:
+	return get_models_dir(create=False)
+
+
+def _scan_models_of_type(model_type: str) -> list[Path]:
+	"""扫描 models/ 目录，返回指定类型模型的路径列表（按名称倒序，最新的在前）。"""
+	models_dir = _get_models_dir()
+	if not models_dir.exists():
+		return []
+
+	result = []
+	for entry in sorted(models_dir.iterdir(), reverse=True):
+		if entry.name.startswith("."):
+			continue
+		if model_type == "lstm":
+			if entry.is_dir() and list(entry.glob("*.pt")):
+				result.append(entry)
+		elif model_type == "bert":
+			has_bert_weights = any(
+				(entry / filename).exists()
+				for filename in ("model.safetensors", "pytorch_model.bin")
+			)
+			if entry.is_dir() and (entry / "config.json").exists() and has_bert_weights:
+				result.append(entry)
+	return result
+
+
+def _check_model_exists(model_type: str) -> str | None:
+	"""检查指定类型的模型文件是否存在。返回错误信息，若存在则返回 None。"""
+	# 先检查当前活跃模型路径
+	if model_type == "lstm":
+		model_path = os.getenv("MODEL_PATH", "")
+		if model_path:
+			raw = Path(model_path)
+			if raw.is_file() and raw.exists():
+				return None
+			if raw.is_dir():
+				pt_files = sorted(raw.glob("*.pt"))
+				if pt_files:
+					os.environ["MODEL_PATH"] = str(pt_files[0])
+					return None
+	elif model_type == "bert":
+		checkpoint_path = os.getenv("BERT_CHECKPOINT_PATH", "")
+		if checkpoint_path:
+			raw = Path(checkpoint_path)
+			if raw.is_dir() and (raw / "config.json").exists():
+				return None
+
+	# 活跃路径不可用，扫描 models/ 目录
+	available = _scan_models_of_type(model_type)
+	if available:
+		# 自动激活最新的模型
+		latest = str(available[0])
+		if model_type == "lstm":
+			pt_files = sorted(available[0].glob("*.pt"))
+			os.environ["MODEL_PATH"] = str(pt_files[0])
+		else:
+			os.environ["BERT_CHECKPOINT_PATH"] = latest
+		return None
+
+	return f"{model_type.upper()} 模型不存在，请先在「模型训练」页面训练 {model_type.upper()} 模型"
 
 
 def predict_text(text: str, model_type: str | None = None) -> PredictResult:
@@ -128,16 +203,28 @@ def predict_text(text: str, model_type: str | None = None) -> PredictResult:
 	策略：
 	- 若请求显式指定 model_type，则优先使用。
 	- 否则读取 backend/.env 的 PREDICT_MODEL_TYPE（默认 lstm）。
-	- 模型分支失败时降级到关键词基线，避免接口直接报错。
+	- 模型文件缺失时直接报错（提示用户先训练），不降级到关键词基线。
+	- 模型分支运行时异常时降级到关键词基线。
 	"""
 	ensure_backend_env_loaded()
 	effective_model = (model_type or get_predict_model_type("lstm")).strip().lower()
+	if effective_model not in {"lstm", "bert"}:
+		fallback = _keyword_baseline(text)
+		fallback.source = f"{fallback.source}-fallback(invalid-model:{effective_model})"
+		return fallback
+
+	# 先检查模型文件是否存在，缺失则直接报错
+	missing_msg = _check_model_exists(effective_model)
+	if missing_msg:
+		raise FileNotFoundError(missing_msg)
 
 	try:
 		if effective_model == "bert":
 			return _predict_with_bert(text)
 		if effective_model == "lstm":
 			return _predict_with_lstm(text)
+	except FileNotFoundError:
+		raise
 	except Exception as exc:
 		fallback = _keyword_baseline(text)
 		fallback.source = f"{fallback.source}-fallback({effective_model}:{type(exc).__name__})"

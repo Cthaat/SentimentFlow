@@ -1,34 +1,19 @@
 import { NextResponse } from "next/server";
 import { proxyToBackend } from "@/lib/api-proxy";
 
-type PredictRequestBody = {
-  text?: string;
-  model?: string;
-};
-
 export async function POST(request: Request) {
-  let body: PredictRequestBody = {};
-
+  let body: { job_id?: string } = {};
   try {
-    body = (await request.json()) as PredictRequestBody;
+    body = await request.json();
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
   }
-
-  const text = (body.text || "").trim();
-  if (!text) {
-    return NextResponse.json({ ok: false, error: "text is required" }, { status: 400 });
+  if (!body.job_id) {
+    return NextResponse.json({ ok: false, error: "job_id is required" }, { status: 400 });
   }
 
-  const fetchBody: Record<string, string> = { text };
-  if (body.model) fetchBody.model = body.model;
-
   try {
-    const { response, baseUrl } = await proxyToBackend("/api/predict/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(fetchBody),
-    }, 30000);
+    const { response, baseUrl } = await proxyToBackend(`/api/training/cancel/${body.job_id}`, { method: "POST" });
     const data = await response.json();
     return NextResponse.json({ ok: response.ok, upstreamStatus: response.status, baseUrl, payload: data }, { status: response.ok ? 200 : response.status });
   } catch (error) {

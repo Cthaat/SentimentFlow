@@ -29,3 +29,5 @@ class PredictResponse(BaseModel):
 	score: float
 	# 结果来源：用于区分基线规则或模型推理。
 	source: str
+	# 模型名称：当前使用的模型标识（如 lstm_20260429_143025）。
+	model_name: str = ""

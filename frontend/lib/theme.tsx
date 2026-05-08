@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useSyncExternalStore } from "react";
 
 interface ThemeContextType {
 	theme: "light" | "dark";
@@ -9,36 +9,77 @@ interface ThemeContextType {
 
 const ThemeContext = React.createContext<ThemeContextType | undefined>(undefined);
 
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-	const [theme, setTheme] = useState<"light" | "dark" | null>(null);
+type Theme = "light" | "dark";
 
-	useEffect(() => {
-		// 只在客户端执行
-		const stored = localStorage.getItem("theme") as "light" | "dark" | null;
-		const init = stored || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-		setTheme(init);
-		applyTheme(init);
-	}, []);
+const listeners = new Set<() => void>();
+let currentTheme: Theme = "light";
+let initialized = false;
 
-	const applyTheme = (newTheme: "light" | "dark") => {
-		if (newTheme === "dark") {
-			document.documentElement.classList.add("dark");
-		} else {
-			document.documentElement.classList.remove("dark");
-		}
-		localStorage.setItem("theme", newTheme);
+function readStoredTheme(): Theme {
+	if (typeof window === "undefined") {
+		return "light";
+	}
+
+	const stored = localStorage.getItem("theme") as Theme | null;
+	return stored || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+
+function applyTheme(newTheme: Theme) {
+	if (typeof document === "undefined") {
+		return;
+	}
+
+	if (newTheme === "dark") {
+		document.documentElement.classList.add("dark");
+	} else {
+		document.documentElement.classList.remove("dark");
+	}
+	localStorage.setItem("theme", newTheme);
+}
+
+function emitThemeChange() {
+	for (const listener of listeners) {
+		listener();
+	}
+}
+
+function subscribeTheme(listener: () => void) {
+	listeners.add(listener);
+	if (!initialized && typeof window !== "undefined") {
+		initialized = true;
+		currentTheme = readStoredTheme();
+		applyTheme(currentTheme);
+		queueMicrotask(listener);
+	}
+
+	return () => {
+		listeners.delete(listener);
 	};
+}
+
+function getThemeSnapshot(): Theme {
+	return currentTheme;
+}
+
+function getServerThemeSnapshot(): Theme {
+	return "light";
+}
+
+function setStoredTheme(newTheme: Theme) {
+	currentTheme = newTheme;
+	initialized = true;
+	applyTheme(newTheme);
+	emitThemeChange();
+}
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+	const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getServerThemeSnapshot);
 
 	const toggleTheme = () => {
-		if (theme) {
-			const newTheme = theme === "light" ? "dark" : "light";
-			setTheme(newTheme);
-			applyTheme(newTheme);
-		}
+		setStoredTheme(theme === "light" ? "dark" : "light");
 	};
 
-	// 在主题加载前渲染子组件，避免水合错误
-	return <ThemeContext.Provider value={{ theme: theme || "light", toggleTheme }}>{children}</ThemeContext.Provider>;
+	return <ThemeContext.Provider value={{ theme, toggleTheme }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() {

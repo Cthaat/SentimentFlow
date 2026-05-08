@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,34 @@ export function IntegrationTestPanel() {
 	const [predictLoading, setPredictLoading] = useState(false);
 	const [healthResult, setHealthResult] = useState<ApiResult | null>(null);
 	const [predictResult, setPredictResult] = useState<ApiResult | null>(null);
+	const [activeModelName, setActiveModelName] = useState<string | null>(null);
+
+	const fetchActiveModel = useCallback(async () => {
+		try {
+			const res = await fetch("/api/models/active");
+			const data = await res.json();
+			if (data.ok && data.payload) {
+				const p = data.payload as {
+					lstm_path?: string;
+					bert_path?: string;
+					predict_model_type?: string;
+				};
+				const usedType = p.predict_model_type || "lstm";
+				const path = usedType === "lstm" ? p.lstm_path : p.bert_path;
+				if (path) {
+					const parts = path.replace(/\\/g, "/").split("/");
+					const dir = parts[parts.length - 2];
+					setActiveModelName(dir?.startsWith(usedType) ? dir : path);
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}, []);
+
+	useEffect(() => {
+		fetchActiveModel();
+	}, [fetchActiveModel]);
 
 	const backendStatus = useMemo(() => {
 		if (!healthResult) return "未检测";
@@ -48,15 +76,16 @@ export function IntegrationTestPanel() {
 	const runPredict = async () => {
 		setPredictLoading(true);
 		try {
+			const body: Record<string, string> = { text };
 			const response = await fetch("/api/integration/predict", {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ text }),
+				body: JSON.stringify(body),
 			});
 			const data = (await response.json()) as ApiResult;
-			setPredictResult(data);
+			setPredictResult({ ...data, upstreamStatus: response.status });
 		} catch (error) {
 			setPredictResult({
 				ok: false,
@@ -67,11 +96,23 @@ export function IntegrationTestPanel() {
 		}
 	};
 
+	const noModelError =
+		predictResult && !predictResult.ok && predictResult.upstreamStatus === 404
+			? (predictResult.payload as { detail?: string })?.detail ||
+			  predictResult.error ||
+			  "模型文件不存在，请先在「模型训练」页面训练模型"
+			: null;
+
+	const usedModelName =
+		predictResult?.ok && predictResult.payload
+			? (predictResult.payload as { model_name?: string })?.model_name || null
+			: null;
+
 	return (
 		<Card className="w-full max-w-3xl">
 			<CardHeader>
-				<CardTitle>前后端联调测试面板</CardTitle>
-				<CardDescription>使用 shadcn 组件构建。先做健康检查，再发起情感预测请求。</CardDescription>
+				<CardTitle>情感预测</CardTitle>
+				<CardDescription>输入文本，使用当前活跃模型获取情感分析结果</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
 				<div className="flex items-center gap-2">
@@ -101,6 +142,24 @@ export function IntegrationTestPanel() {
 						{predictLoading ? "请求中..." : "发送预测请求"}
 					</Button>
 				</div>
+
+				{noModelError && (
+					<div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/30">
+						<p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+							未检测到可用模型
+						</p>
+						<p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
+							{noModelError}
+						</p>
+					</div>
+				)}
+
+				{(usedModelName || activeModelName) && (
+					<div className="flex items-center gap-2 rounded-lg border border-green-300 bg-green-50 px-3 py-2 dark:border-green-700 dark:bg-green-900/30">
+						<span className="text-xs text-muted-foreground">当前使用模型</span>
+						<Badge variant="default" className="text-xs">{usedModelName || activeModelName}</Badge>
+					</div>
+				)}
 
 				<div className="grid gap-4 md:grid-cols-2">
 					<div className="rounded-lg border p-3">

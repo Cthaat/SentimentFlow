@@ -4,5 +4,7 @@ pydantic
 python-jose[cryptography]
 passlib[bcrypt]
 torch
+transformers
+datasets
 pandas
 jieba
