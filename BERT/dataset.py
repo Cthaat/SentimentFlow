@@ -240,7 +240,13 @@ class CsvStreamDataset(IterableDataset):
 
                     mapped_label = validate_sentiment_score(mapped_label)
 
-                    yield text, mapped_label
+                    yield {
+                        "text": text,
+                        "label": mapped_label,
+                        "soft_labels": None,
+                        "sample_weight": 1.0,
+                        "label_source": "csv",
+                    }
 
         elif hasattr(self.source, "__len__") and hasattr(self.source, "__getitem__"):
             # ---- 类 HuggingFace Dataset 数据源 ----
@@ -265,7 +271,18 @@ class CsvStreamDataset(IterableDataset):
 
                 mapped_label = validate_sentiment_score(mapped_label)
 
-                yield text, mapped_label
+                sample_weight = row.get("sample_weight", 1.0)
+                label_source = row.get("label_source") or row.get("_sf_label_source") or "real"
+                soft_labels = None
+                if str(label_source) in {"pseudo", "interpolated"}:
+                    soft_labels = row.get("soft_labels") or row.get("probabilities")
+                yield {
+                    "text": text,
+                    "label": mapped_label,
+                    "soft_labels": soft_labels,
+                    "sample_weight": float(sample_weight),
+                    "label_source": str(label_source),
+                }
 
         else:
             raise TypeError(f"Unsupported dataset source type: {type(self.source)!r}")

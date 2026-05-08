@@ -41,8 +41,11 @@ class TrainingProgress:
     val_f1: float | None = None
     val_weighted_f1: float | None = None
     val_mae: float | None = None
+    val_rmse: float | None = None
     val_qwk: float | None = None
+    val_spearman: float | None = None
     best_f1: float | None = None
+    best_metric: float | None = None
 
 
 @dataclass
@@ -77,8 +80,11 @@ class TrainingJob:
                 "val_f1": self.progress.val_f1,
                 "val_weighted_f1": self.progress.val_weighted_f1,
                 "val_mae": self.progress.val_mae,
+                "val_rmse": self.progress.val_rmse,
                 "val_qwk": self.progress.val_qwk,
+                "val_spearman": self.progress.val_spearman,
                 "best_f1": self.progress.best_f1,
+                "best_metric": self.progress.best_metric,
             },
             "logs": self.logs[-50:],
             "started_at": self.started_at,
@@ -90,14 +96,20 @@ class TrainingJob:
 
 
 _EPOCH_PATTERN = re.compile(
-    r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([\d.]+)[,.]?\s*ValAcc:\s*([\d.]+)[,.]?\s*"
-    r"ValMacroF1:\s*([\d.]+)(?:[,.]?\s*ValWeightedF1:\s*([\d.]+)[,.]?\s*"
-    r"ValMAE:\s*([\d.]+)[,.]?\s*ValQWK:\s*([-\d.]+))?"
+    r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([-\d.]+)[,.]?\s*ValAcc:\s*([-\d.]+)[,.]?\s*"
+    r"ValMacroF1:\s*([-\d.]+)(?:[,.]?\s*ValWeightedF1:\s*([-\d.]+)[,.]?\s*"
+    r"ValMAE:\s*([-\d.]+)(?:[,.]?\s*ValRMSE:\s*([-\d.]+))?[,.]?\s*"
+    r"ValQWK:\s*([-\d.]+)(?:[,.]?\s*ValSpearman:\s*([-\d.]+))?)?"
 )
 _STEP_PATTERN = re.compile(
     r"Epoch\s+(\d+)/(\d+),\s*Step\s+(\d+)/(\d+),\s*Loss:\s*([\d.]+)"
 )
-_BEST_MODEL_PATTERN = re.compile(r"Best model updated at epoch \d+, ValMacroF1=([\d.]+)")
+_BEST_MODEL_PATTERN = re.compile(
+    r"Best model updated at epoch \d+,"
+    r"(?:\s*SelectionMetric=([-\d.]+),)?"
+    r".*?ValMacroF1=([-\d.]+)"
+    r"(?:.*?ValQWK=([-\d.]+))?"
+)
 
 
 class TrainingManager:
@@ -331,6 +343,18 @@ class _StreamCapture:
         elif line.startswith("DATA SUMMARY"):
             self.job.progress.stage = "data_ready"
             self.job.progress.stage_detail = "训练数据已加载，正在统计样本分布"
+        elif line.startswith("BERT training stage=teacher"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = "Teacher 阶段仅使用真实多分类数据"
+        elif line.startswith("Pseudo-label cache ready"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = line
+        elif line.startswith("Pseudo-label split ready"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = line
+        elif line.startswith("BERT training stage=student"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = "Student 阶段正在使用真实标签和高置信伪标签"
         elif line.startswith("Training config:"):
             self.job.progress.stage = "training"
             self.job.progress.stage_detail = line
@@ -359,11 +383,19 @@ class _StreamCapture:
             if m.group(5) is not None:
                 self.job.progress.val_weighted_f1 = float(m.group(5))
                 self.job.progress.val_mae = float(m.group(6))
-                self.job.progress.val_qwk = float(m.group(7))
+                if m.group(7) is not None:
+                    self.job.progress.val_rmse = float(m.group(7))
+                self.job.progress.val_qwk = float(m.group(8))
+                if m.group(9) is not None:
+                    self.job.progress.val_spearman = float(m.group(9))
 
         m2 = _BEST_MODEL_PATTERN.search(line)
         if m2:
-            self.job.progress.best_f1 = float(m2.group(1))
+            if m2.group(1) is not None:
+                self.job.progress.best_metric = float(m2.group(1))
+            self.job.progress.best_f1 = float(m2.group(2))
+            if m2.group(3) is not None:
+                self.job.progress.val_qwk = float(m2.group(3))
 
     def flush(self) -> None:
         self._original_stdout.flush()

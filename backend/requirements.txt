@@ -4,6 +4,7 @@ pydantic
 python-jose[cryptography]
 passlib[bcrypt]
 torch
+accelerate
 transformers
 datasets
 pandas

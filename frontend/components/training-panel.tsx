@@ -24,8 +24,11 @@ interface JobStatus {
     val_f1: number | null;
     val_weighted_f1?: number | null;
     val_mae?: number | null;
+    val_rmse?: number | null;
     val_qwk?: number | null;
+    val_spearman?: number | null;
     best_f1: number | null;
+    best_metric?: number | null;
   };
   logs: string[];
   started_at: string | null;
@@ -64,19 +67,45 @@ const LSTM_DEFAULTS: Record<string, string> = {
 };
 
 const BERT_DEFAULTS: Record<string, string> = {
+  BERT_TRAINING_STAGE: "teacher",
   BERT_EPOCHS: "5",
   BERT_TRAIN_BATCH_SIZE: "32",
   BERT_TRAIN_LR: "0.00002",
+  BERT_WEIGHT_DECAY: "0.01",
+  BERT_LAYERWISE_LR_DECAY: "0.9",
+  BERT_HEAD_LR_MULTIPLIER: "2.0",
+  BERT_SCHEDULER: "cosine",
+  BERT_WARMUP_RATIO: "0.06",
   BERT_EARLY_STOP_PATIENCE: "2",
   BERT_EARLY_STOP_MIN_DELTA: "0.0005",
+  BERT_SELECTION_METRIC: "qwk",
   BERT_TRAIN_WEIGHTED_LOSS: "1",
+  BERT_TEACHER_CHECKPOINT_PATH: "",
+  PSEUDO_LABEL_PATH: "pseudo_labels.jsonl",
+  PSEUDO_LABEL_MIN_CONFIDENCE: "0.75",
+  PSEUDO_LABEL_TEMPERATURE: "1.5",
+  PSEUDO_LABEL_WEIGHT: "0.3",
+  ORDINAL_DISTANCE_WEIGHT: "0.35",
+  ORDINAL_BCE_WEIGHT: "0.5",
+  ORDINAL_REGRESSION_WEIGHT: "0.2",
+  ORDINAL_LABEL_SMOOTHING: "0.05",
+  PSEUDO_LABEL_SMOOTHING: "0.02",
+  FOCAL_GAMMA: "1.5",
+  LOGIT_ADJUSTMENT_WEIGHT: "0.3",
+  CLASS_BALANCED_BETA: "0.9999",
+  BERT_INTERPOLATE_MISSING_LABELS: "1",
+  BERT_DISTRIBUTION_AWARE_OVERSAMPLING: "1",
+  BERT_PSEUDO_CURRICULUM_EPOCHS: "2",
+  BERT_PSEUDO_CURRICULUM_START_SCALE: "0.3",
+  BERT_GRADIENT_CHECKPOINTING: "1",
+  BERT_MIXED_PRECISION: "fp16",
 };
 
 const ACTIVE_TRAINING_JOB_STORAGE_KEY = "sentimentflow.activeTrainingJobId";
 
 export function TrainingPanel() {
-  const [modelType, setModelType] = useState<"lstm" | "bert">("lstm");
-  const [params, setParams] = useState<Record<string, string>>({ ...LSTM_DEFAULTS });
+  const [modelType, setModelType] = useState<"lstm" | "bert">("bert");
+  const [params, setParams] = useState<Record<string, string>>({ ...BERT_DEFAULTS });
   const [selectedDatasets, setSelectedDatasets] = useState<string[]>(
     DATASET_OPTIONS.map((d) => d.value)
   );
@@ -578,8 +607,11 @@ export function TrainingPanel() {
               <MetricBox label="Val Macro F1" value={jobStatus.progress.val_f1} suffix="" />
               <MetricBox label="Val Weighted F1" value={jobStatus.progress.val_weighted_f1} suffix="" />
               <MetricBox label="Val MAE" value={jobStatus.progress.val_mae} suffix="" />
+              <MetricBox label="Val RMSE" value={jobStatus.progress.val_rmse} suffix="" />
               <MetricBox label="Val QWK" value={jobStatus.progress.val_qwk} suffix="" />
+              <MetricBox label="Val Spearman" value={jobStatus.progress.val_spearman} suffix="" />
               <MetricBox label="Best F1" value={jobStatus.progress.best_f1} suffix="" />
+              <MetricBox label="Best Metric" value={jobStatus.progress.best_metric} suffix="" />
             </div>
           </div>
         )}

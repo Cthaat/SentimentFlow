@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
+import time
 from pathlib import Path
 from typing import Dict
 
@@ -32,11 +35,37 @@ DATASET_ALIASES = {
 META_COLUMNS = {
     "text",
     "label",
+    "soft_labels",
+    "sample_weight",
+    "label_source",
+    "source_dataset",
     "_sf_is_legacy_binary",
     "_sf_binary_label",
     "_sf_label_source",
     "_sf_teacher_confidence",
 }
+
+TRAINING_COLUMNS = {
+    "text",
+    "label",
+    "soft_labels",
+    "sample_weight",
+    "label_source",
+    "source_dataset",
+}
+
+REAL_MULTICLASS_DATASETS = (
+    "BerlinWang/DMSC",
+    "dirtycomputer/JD_review",
+)
+
+BINARY_PSEUDO_DATASETS = (
+    "lansinuote/ChnSentiCorp",
+    "XiangPan/waimai_10k",
+    "dirtycomputer/weibo_senti_100k",
+    "ndiy/NLPCC14-SC",
+    "dirtycomputer/ChnSentiCorp_htl_all",
+)
 
 
 def _resolve_dataset_name(dataset_name: str) -> str:
@@ -98,6 +127,19 @@ def _project_standard_columns(split):
     if remove_columns:
         split = split.remove_columns(remove_columns)
     return split
+
+
+def _project_training_columns(split):
+    keep_columns = [column for column in split.column_names if column in TRAINING_COLUMNS]
+    remove_columns = [column for column in split.column_names if column not in keep_columns]
+    if remove_columns:
+        split = split.remove_columns(remove_columns)
+    return split
+
+
+def _one_hot_soft_label(score: int) -> list[float]:
+    score = validate_sentiment_score(score)
+    return [1.0 if index == score else 0.0 for index in range(NUM_SENTIMENT_CLASSES)]
 
 
 def _normalize_short_sentence_labels(raw_rows: list[tuple[str, int]]) -> list[tuple[str, int]]:
@@ -219,38 +261,6 @@ def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = Fa
     return _project_standard_columns(split)
 
 
-def _force_balance_score_split(split, dataset_name: str, split_name: str, seed: int = 42):
-    """对 0-5 评分数据集按存在的类别做下采样均衡。"""
-    class_splits = {
-        score: split.filter(lambda row, s=score: int(row["label"]) == s)
-        for score in SENTIMENT_SCORES
-    }
-    class_counts = {score: len(class_split) for score, class_split in class_splits.items()}
-    present_counts = [count for count in class_counts.values() if count > 0]
-
-    if len(present_counts) < 2:
-        print(
-            f"Warning: Skip force-balance for {dataset_name} {split_name} "
-            f"because fewer than two score classes are present: {class_counts}."
-        )
-        return split
-
-    min_count = min(present_counts)
-    from datasets import concatenate_datasets
-
-    balanced_parts = [
-        class_split.shuffle(seed=seed + score).select(range(min_count))
-        for score, class_split in class_splits.items()
-        if len(class_split) > 0
-    ]
-    balanced = concatenate_datasets(balanced_parts).shuffle(seed=seed)
-    print(
-        f"Force-balanced {dataset_name} {split_name}: "
-        f"per_class={class_counts}, kept_per_present_class={min_count}, total={len(balanced)}"
-    )
-    return balanced
-
-
 def _semi_supervised_enabled() -> bool:
     raw = os.getenv("SEMI_SUPERVISED_01_TO_05", "auto").strip().lower()
     return raw not in {"0", "false", "no", "off"}
@@ -272,11 +282,25 @@ def _has_legacy_binary_rows(split) -> bool:
 
 
 def _infer_teacher_num_labels(teacher) -> int:
+    classifier = getattr(teacher, "classifier", None)
+    if classifier is not None and getattr(classifier, "out_features", None) is not None:
+        return int(classifier.out_features)
+
     backbone = getattr(teacher, "backbone", teacher)
     config_num_labels = int(getattr(getattr(backbone, "config", None), "num_labels", 0) or 0)
+    if config_num_labels == NUM_SENTIMENT_CLASSES:
+        return config_num_labels
+    backbone_classifier = getattr(backbone, "classifier", None)
+    if backbone_classifier is not None:
+        out_features = getattr(backbone_classifier, "out_features", None)
+        if out_features is not None:
+            return int(out_features)
+        out_proj = getattr(backbone_classifier, "out_proj", None)
+        if out_proj is not None and getattr(out_proj, "out_features", None) is not None:
+            return int(out_proj.out_features)
+
     if config_num_labels:
         return config_num_labels
-    classifier = getattr(backbone, "classifier", None)
     if classifier is not None:
         out_features = getattr(classifier, "out_features", None)
         if out_features is not None:
@@ -327,8 +351,8 @@ def _maybe_apply_semi_supervised_binary_refinement(split, dataset_name: str, spl
             return split
 
         tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_path))
-        min_confidence = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.45"))
-        fallback_to_endpoint = os.getenv("PSEUDO_LABEL_FALLBACK_TO_ENDPOINT", "1") == "1"
+        min_confidence = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.75"))
+        fallback_to_endpoint = os.getenv("PSEUDO_LABEL_FALLBACK_TO_ENDPOINT", "0") == "1"
         batch_size = max(1, int(os.getenv("PSEUDO_LABEL_BATCH_SIZE", "64")))
         teacher.eval()
 
@@ -439,6 +463,506 @@ def get_label_map(dataset_name: str) -> Dict[int, int] | None:
     return None
 
 
+def _training_stage() -> str:
+    """Resolve the BERT training stage.
+
+    auto:
+    - if BERT_TEACHER_CHECKPOINT_PATH/PSEUDO_LABEL_TEACHER_PATH exists, train student
+    - otherwise train teacher
+    """
+    raw = os.getenv("BERT_TRAINING_STAGE", os.getenv("TRAINING_STAGE", "auto")).strip().lower()
+    if raw in {"teacher", "student", "legacy"}:
+        return raw
+    teacher_path = _student_teacher_path()
+    return "student" if teacher_path and Path(teacher_path).exists() else "teacher"
+
+
+def _student_teacher_path() -> str:
+    return (
+        os.getenv("BERT_TEACHER_CHECKPOINT_PATH", "").strip()
+        or os.getenv("BERT_PSEUDO_LABEL_TEACHER_PATH", "").strip()
+        or os.getenv("PSEUDO_LABEL_TEACHER_PATH", "").strip()
+    )
+
+
+def _pseudo_label_path() -> Path:
+    return Path(os.getenv("PSEUDO_LABEL_PATH", "pseudo_labels.jsonl")).expanduser()
+
+
+def _teacher_dataset_names() -> list[str]:
+    raw = os.getenv("BERT_TEACHER_DATASETS", ",".join(REAL_MULTICLASS_DATASETS))
+    requested = [_resolve_dataset_name(item.strip()) for item in raw.split(",") if item.strip()]
+    invalid = [name for name in requested if name not in REAL_MULTICLASS_DATASETS]
+    if invalid:
+        raise ValueError(
+            "Teacher stage only allows real multiclass datasets: "
+            f"{REAL_MULTICLASS_DATASETS}. Invalid: {invalid}"
+        )
+    return requested or list(REAL_MULTICLASS_DATASETS)
+
+
+def _binary_pseudo_dataset_names() -> list[str]:
+    raw = os.getenv("BERT_BINARY_PSEUDO_DATASETS", ",".join(BINARY_PSEUDO_DATASETS))
+    requested = [_resolve_dataset_name(item.strip()) for item in raw.split(",") if item.strip()]
+    invalid = [name for name in requested if name not in BINARY_PSEUDO_DATASETS]
+    if invalid:
+        raise ValueError(
+            "Pseudo-label stage only allows binary source datasets: "
+            f"{BINARY_PSEUDO_DATASETS}. Invalid: {invalid}"
+        )
+    return requested or list(BINARY_PSEUDO_DATASETS)
+
+
+def _with_training_columns(split, *, label_source: str, sample_weight: float, source_dataset: str):
+    def add_columns(row):
+        row_copy = dict(row)
+        score = validate_sentiment_score(int(row_copy["label"]))
+        row_copy["label"] = score
+        row_copy["label_source"] = label_source
+        row_copy["sample_weight"] = float(sample_weight)
+        row_copy["source_dataset"] = source_dataset
+        row_copy["soft_labels"] = _one_hot_soft_label(score)
+        return row_copy
+
+    return _project_training_columns(split.map(add_columns))
+
+
+def _soft_label_for_interpolated_score(score: int, lower_score: int, upper_score: int) -> list[float]:
+    soft = [0.0 for _ in range(NUM_SENTIMENT_CLASSES)]
+    soft[score] = float(os.getenv("INTERPOLATED_LABEL_CENTER_PROB", "0.5"))
+    neighbor_mass = max(0.0, 1.0 - soft[score])
+    soft[lower_score] += neighbor_mass / 2.0
+    soft[upper_score] += neighbor_mass / 2.0
+    total = sum(soft)
+    return [value / total for value in soft]
+
+
+def _add_interpolated_missing_score_samples(train_split):
+    """Create low-weight soft-label samples for missing interior score buckets."""
+    if os.getenv("BERT_INTERPOLATE_MISSING_LABELS", "1") != "1":
+        return train_split
+
+    from datasets import concatenate_datasets
+
+    counts = get_label_distribution(train_split)
+    labels = [int(label) for label in train_split["label"]]
+    added_parts = []
+    max_per_class = max(0, int(os.getenv("INTERPOLATED_LABEL_MAX_PER_CLASS", "50000")))
+    ratio = max(0.0, float(os.getenv("INTERPOLATED_LABEL_RATIO", "0.15")))
+    sample_weight = float(os.getenv("INTERPOLATED_LABEL_WEIGHT", "0.2"))
+    seed = int(os.getenv("INTERPOLATED_LABEL_SEED", "42"))
+
+    for score in range(1, NUM_SENTIMENT_CLASSES - 1):
+        if counts[score] > 0:
+            continue
+        lower_scores = [candidate for candidate in range(score - 1, -1, -1) if counts[candidate] > 0]
+        upper_scores = [candidate for candidate in range(score + 1, NUM_SENTIMENT_CLASSES) if counts[candidate] > 0]
+        if not lower_scores or not upper_scores:
+            continue
+
+        lower_score = lower_scores[0]
+        upper_score = upper_scores[0]
+        lower_indices = [index for index, label in enumerate(labels) if label == lower_score]
+        upper_indices = [index for index, label in enumerate(labels) if label == upper_score]
+        target_count = int(min(len(lower_indices), len(upper_indices)) * ratio)
+        if max_per_class > 0:
+            target_count = min(target_count, max_per_class)
+        if target_count <= 0:
+            continue
+
+        lower_take = max(1, target_count // 2)
+        upper_take = max(1, target_count - lower_take)
+        lower_part = train_split.select(lower_indices).shuffle(seed=seed + score).select(range(min(lower_take, len(lower_indices))))
+        upper_part = train_split.select(upper_indices).shuffle(seed=seed + score + 17).select(range(min(upper_take, len(upper_indices))))
+        source_part = concatenate_datasets([lower_part, upper_part]).shuffle(seed=seed + score)
+        soft_label = _soft_label_for_interpolated_score(score, lower_score, upper_score)
+
+        def to_interpolated(row, target_score=score, target_soft=soft_label):
+            return {
+                "text": str(row["text"]),
+                "label": target_score,
+                "soft_labels": target_soft,
+                "sample_weight": sample_weight,
+                "label_source": "interpolated",
+                "source_dataset": "label_interpolation",
+            }
+
+        interpolated = source_part.map(to_interpolated)
+        interpolated = _project_training_columns(interpolated)
+        print(
+            f"Interpolated missing score {score}: added={len(interpolated)}, "
+            f"neighbors=({lower_score},{upper_score}), soft={soft_label}, weight={sample_weight}"
+        )
+        added_parts.append(interpolated)
+
+    if not added_parts:
+        return train_split
+    return concatenate_datasets([train_split, *added_parts]).shuffle(seed=seed)
+
+
+def _apply_distribution_aware_oversampling(train_split):
+    """Append minority duplicates with sqrt targets; never removes majority data."""
+    if os.getenv("BERT_DISTRIBUTION_AWARE_OVERSAMPLING", "1") != "1":
+        return train_split
+
+    from datasets import concatenate_datasets
+
+    counts = get_label_distribution(train_split)
+    max_count = max(counts) if counts else 0
+    if max_count <= 0:
+        return train_split
+
+    labels = [int(label) for label in train_split["label"]]
+    temperature = max(0.0, min(1.0, float(os.getenv("BERT_OVERSAMPLE_TEMPERATURE", "0.5"))))
+    max_added_total = max(0, int(os.getenv("BERT_OVERSAMPLE_MAX_ADDED", "500000")))
+    seed = int(os.getenv("BERT_OVERSAMPLE_SEED", "42"))
+    added_parts = []
+    added_total = 0
+    for score, count in enumerate(counts):
+        if count <= 0 or count >= max_count:
+            continue
+        target = int(max_count * ((count / max_count) ** temperature))
+        add_count = max(0, target - count)
+        if max_added_total > 0:
+            add_count = min(add_count, max_added_total - added_total)
+        if add_count <= 0:
+            continue
+        indices = [index for index, label in enumerate(labels) if label == score]
+        repeats = (add_count + len(indices) - 1) // max(1, len(indices))
+        sampled_indices = (indices * repeats)[:add_count]
+        part = train_split.select(sampled_indices).shuffle(seed=seed + score)
+        added_parts.append(part)
+        added_total += len(part)
+        if max_added_total > 0 and added_total >= max_added_total:
+            break
+
+    if not added_parts:
+        return train_split
+    oversampled = concatenate_datasets([train_split, *added_parts]).shuffle(seed=seed)
+    print(
+        "Distribution-aware oversampling: "
+        f"before={sum(counts)}, added={added_total}, after={len(oversampled)}, "
+        f"before_counts={counts}, after_counts={get_label_distribution(oversampled)}"
+    )
+    return oversampled
+
+
+def _load_supervised_parts(name: str, *, val_ratio: float):
+    """Load one real 0-5 dataset and return normalized train/val splits."""
+    from datasets import load_dataset
+
+    ds = load_dataset(name)
+    if "train" not in ds:
+        raise ValueError(f"Dataset {name} has no train split.")
+
+    train_part = ds["train"]
+    if "validation" in ds:
+        val_part = ds["validation"]
+    elif "test" in ds:
+        val_part = ds["test"]
+    else:
+        split_result = train_part.train_test_split(test_size=val_ratio, seed=42)
+        train_part = split_result["train"]
+        val_part = split_result["test"]
+
+    train_part = _normalize_split_columns(train_part, name, preserve_label=False)
+    val_part = _normalize_split_columns(val_part, name, preserve_label=False)
+    train_part = _with_training_columns(
+        train_part,
+        label_source="real",
+        sample_weight=float(os.getenv("REAL_LABEL_WEIGHT", "1.0")),
+        source_dataset=name,
+    )
+    val_part = _with_training_columns(
+        val_part,
+        label_source="real",
+        sample_weight=1.0,
+        source_dataset=name,
+    )
+    return train_part, val_part
+
+
+def _build_real_multiclass_splits(dataset_names: list[str]):
+    from datasets import concatenate_datasets
+
+    val_ratio = float(os.getenv("TRAIN_VAL_RATIO", "0.1"))
+    val_ratio = min(max(val_ratio, 0.01), 0.5)
+    train_splits = []
+    val_splits = []
+    for name in dataset_names:
+        train_part, val_part = _load_supervised_parts(name, val_ratio=val_ratio)
+        print(
+            f"Real dataset ready: {name} "
+            f"train_score_counts={get_label_distribution(train_part)}, "
+            f"val_score_counts={get_label_distribution(val_part)}"
+        )
+        train_splits.append(train_part)
+        val_splits.append(val_part)
+
+    train_split = train_splits[0] if len(train_splits) == 1 else concatenate_datasets(train_splits)
+    val_split = val_splits[0] if len(val_splits) == 1 else concatenate_datasets(val_splits)
+    train_split = _add_interpolated_missing_score_samples(train_split)
+    train_split = _apply_distribution_aware_oversampling(train_split)
+    return train_split.shuffle(seed=42), val_split.shuffle(seed=42)
+
+
+def _text_and_label_columns(split, dataset_name: str) -> tuple[str, str]:
+    columns = set(split.column_names)
+    text_col = next((c for c in ["text", "review", "content", "Comment", "comment", "sentence"] if c in columns), None)
+    label_col = next((c for c in ["label", "sentiment", "Star", "score", "rating"] if c in columns), None)
+    if text_col is None or label_col is None:
+        raise ValueError(
+            f"Dataset {dataset_name} has unsupported schema. "
+            f"Missing text/label columns in {sorted(columns)}"
+        )
+    return text_col, label_col
+
+
+def _pseudo_row_id(dataset_name: str, split_name: str, row_index: int, text: str) -> str:
+    raw = f"{dataset_name}\t{split_name}\t{row_index}\t{text}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()
+
+
+def _read_existing_pseudo_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    ids: set[str] = set()
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            row_id = payload.get("id")
+            if isinstance(row_id, str):
+                ids.add(row_id)
+    return ids
+
+
+def _distributed_rank_and_world_size() -> tuple[int, int]:
+    try:
+        rank = int(os.getenv("RANK", "0"))
+    except ValueError:
+        rank = 0
+    try:
+        world_size = int(os.getenv("WORLD_SIZE", "1"))
+    except ValueError:
+        world_size = 1
+    return rank, max(1, world_size)
+
+
+def _pseudo_label_cache_signature(teacher_path: str, threshold: float, temperature: float) -> str:
+    payload = {
+        "teacher_path": str(Path(teacher_path).expanduser()),
+        "datasets": _binary_pseudo_dataset_names(),
+        "threshold": threshold,
+        "temperature": temperature,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()
+
+
+def _wait_for_pseudo_label_cache(done_path: Path, expected_signature: str) -> None:
+    timeout_seconds = max(1, int(os.getenv("PSEUDO_LABEL_WAIT_TIMEOUT_SECONDS", "7200")))
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if done_path.exists():
+            try:
+                payload = json.loads(done_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+            if payload.get("signature") == expected_signature:
+                return
+        time.sleep(2.0)
+    raise TimeoutError(f"Timed out waiting for pseudo-label cache: {done_path}")
+
+
+def _generate_pseudo_labels_if_needed(teacher_path: str, output_path: Path) -> None:
+    """Generate cached soft pseudo labels with a 6-class teacher."""
+    from datasets import load_dataset
+    import torch
+    from transformers import AutoTokenizer
+
+    from .checkpoint import load_checkpoint
+    from .config import MAX_LEN
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    done_path = output_path.with_name(output_path.name + ".done")
+    threshold = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.75"))
+    temperature = max(1e-6, float(os.getenv("PSEUDO_LABEL_TEMPERATURE", "1.5")))
+    batch_size = max(1, int(os.getenv("PSEUDO_LABEL_BATCH_SIZE", "64")))
+    max_samples = int(os.getenv("PSEUDO_LABEL_MAX_SAMPLES", "0"))
+    signature = _pseudo_label_cache_signature(teacher_path, threshold, temperature)
+
+    rank, world_size = _distributed_rank_and_world_size()
+    if world_size > 1 and rank != 0:
+        _wait_for_pseudo_label_cache(done_path, signature)
+        return
+
+    existing_ids = _read_existing_pseudo_ids(output_path)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    teacher = load_checkpoint(teacher_path, device=device)
+    if teacher is None:
+        raise FileNotFoundError(f"Teacher checkpoint is not loadable: {teacher_path}")
+    if _infer_teacher_num_labels(teacher) != NUM_SENTIMENT_CLASSES:
+        raise ValueError(f"Teacher checkpoint must be 6-class, got {_infer_teacher_num_labels(teacher)}.")
+    teacher.eval()
+    tokenizer = AutoTokenizer.from_pretrained(teacher_path)
+
+    total_seen = 0
+    total_written = 0
+    total_low_confidence = 0
+    with output_path.open("a", encoding="utf-8") as out:
+        for dataset_name in _binary_pseudo_dataset_names():
+            ds = load_dataset(dataset_name)
+            split_name = "train" if "train" in ds else next(iter(ds.keys()))
+            split = ds[split_name]
+            text_col, label_col = _text_and_label_columns(split, dataset_name)
+
+            pending: list[dict] = []
+
+            def flush_pending() -> None:
+                nonlocal total_written, total_low_confidence
+                if not pending:
+                    return
+                texts = [item["text"] for item in pending]
+                encoded = tokenizer(
+                    texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=MAX_LEN,
+                    return_tensors="pt",
+                )
+                input_ids = encoded["input_ids"].to(device, non_blocking=True)
+                attention_mask = encoded["attention_mask"].to(device, non_blocking=True)
+                with torch.inference_mode():
+                    logits = teacher(input_ids=input_ids, attention_mask=attention_mask) / temperature
+                    probs = torch.softmax(logits, dim=1).detach().cpu()
+
+                for item, probability in zip(pending, probs.tolist()):
+                    choice = choose_score_from_binary_teacher_probabilities(
+                        probability,
+                        int(item["source_label"]),
+                        min_confidence=threshold,
+                        fallback_to_endpoint=False,
+                    )
+                    if not bool(choice["accepted"]):
+                        total_low_confidence += 1
+                        continue
+                    score = int(choice["score"])
+                    confidence = float(choice["confidence"])
+                    payload = {
+                        "id": item["id"],
+                        "text": item["text"],
+                        "score": int(score),
+                        "confidence": round(confidence, 6),
+                        "probabilities": [round(float(value), 6) for value in probability],
+                        "source_dataset": item["source_dataset"],
+                        "source_split": item["source_split"],
+                        "source_label": item["source_label"],
+                        "label_source": "pseudo",
+                        "sample_weight": float(os.getenv("PSEUDO_LABEL_WEIGHT", "0.3")),
+                        "temperature": temperature,
+                        "pseudo_source": choice["source"],
+                    }
+                    out.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    total_written += 1
+                pending.clear()
+
+            for row_index, row in enumerate(split):
+                if max_samples > 0 and total_seen >= max_samples:
+                    break
+                text = str(row.get(text_col) or "").strip()
+                if not text:
+                    continue
+                raw_label = _parse_binary_label(row.get(label_col))
+                if raw_label not in (0, 1):
+                    continue
+                row_id = _pseudo_row_id(dataset_name, split_name, row_index, text)
+                if row_id in existing_ids:
+                    continue
+                pending.append({
+                    "id": row_id,
+                    "text": text,
+                    "source_dataset": dataset_name,
+                    "source_split": split_name,
+                    "source_label": raw_label,
+                })
+                total_seen += 1
+                if len(pending) >= batch_size:
+                    flush_pending()
+            flush_pending()
+
+    print(
+        f"Pseudo-label cache ready: {output_path} "
+        f"new_written={total_written}, low_confidence_dropped={total_low_confidence}, "
+        f"existing={len(existing_ids)}, threshold={threshold}, temperature={temperature}"
+    )
+    done_path.write_text(
+        json.dumps(
+            {
+                "path": str(output_path),
+                "new_written": total_written,
+                "low_confidence_dropped": total_low_confidence,
+                "existing": len(existing_ids),
+                "threshold": threshold,
+                "temperature": temperature,
+                "signature": signature,
+                "finished_at": time.time(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _load_pseudo_label_split(path: Path):
+    from datasets import load_dataset
+
+    if not path.exists() or path.stat().st_size == 0:
+        raise FileNotFoundError(f"Pseudo-label cache is empty or missing: {path}")
+    ds = load_dataset("json", data_files={"train": str(path)})["train"]
+    threshold = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.75"))
+    if "confidence" in ds.column_names:
+        before = len(ds)
+        ds = ds.filter(lambda row, min_confidence=threshold: float(row.get("confidence", 0.0)) >= min_confidence)
+        if len(ds) < before:
+            print(f"Filtered pseudo-label cache by confidence: {len(ds)}/{before}, threshold={threshold}")
+
+    def normalize(row):
+        probabilities = [float(value) for value in row.get("probabilities", [])]
+        if len(probabilities) != NUM_SENTIMENT_CLASSES:
+            raise ValueError("Invalid pseudo-label probability vector.")
+        score = validate_sentiment_score(int(row.get("score", max(range(NUM_SENTIMENT_CLASSES), key=lambda i: probabilities[i]))))
+        return {
+            "text": str(row["text"]),
+            "label": score,
+            "soft_labels": probabilities,
+            "sample_weight": float(row.get("sample_weight", os.getenv("PSEUDO_LABEL_WEIGHT", "0.3"))),
+            "label_source": "pseudo",
+            "source_dataset": str(row.get("source_dataset", "")),
+        }
+
+    ds = ds.map(normalize)
+    keep = ["text", "label", "soft_labels", "sample_weight", "label_source", "source_dataset"]
+    remove = [column for column in ds.column_names if column not in keep]
+    if remove:
+        ds = ds.remove_columns(remove)
+    return ds
+
+
+def _apply_sample_limits(train_split, val_split):
+    max_samples = int(os.getenv("TRAIN_MAX_SAMPLES", "0"))
+    if max_samples > 0:
+        train_split = train_split.select(range(min(max_samples, len(train_split))))
+
+    max_val_samples = int(os.getenv("TRAIN_MAX_VAL_SAMPLES", "0"))
+    if max_val_samples > 0:
+        val_split = val_split.select(range(min(max_val_samples, len(val_split))))
+    return train_split, val_split
+
+
 def build_train_split_and_val_split():
     """从环境变量指定的数据集列表中构建训练集和验证集。
 
@@ -474,6 +998,46 @@ def build_train_split_and_val_split():
         ValueError: 所有数据集均加载失败，或数据集缺少必要的 train split。
     """
     from datasets import concatenate_datasets, load_dataset
+
+    stage = _training_stage()
+    if stage == "teacher":
+        dataset_names = _teacher_dataset_names()
+        train_split, val_split = _build_real_multiclass_splits(dataset_names)
+        train_split, val_split = _apply_sample_limits(train_split, val_split)
+        print(
+            "BERT training stage=teacher: only real multiclass datasets are used. "
+            f"train_score_counts={get_label_distribution(train_split)}, "
+            f"val_score_counts={get_label_distribution(val_split)}"
+        )
+        return dataset_names, train_split, val_split, None
+
+    if stage == "student":
+        dataset_names = _teacher_dataset_names()
+        train_split, val_split = _build_real_multiclass_splits(dataset_names)
+        teacher_path = _student_teacher_path()
+        if not teacher_path:
+            raise ValueError(
+                "Student stage requires BERT_TEACHER_CHECKPOINT_PATH, "
+                "BERT_PSEUDO_LABEL_TEACHER_PATH, or PSEUDO_LABEL_TEACHER_PATH."
+            )
+        pseudo_path = _pseudo_label_path()
+        _generate_pseudo_labels_if_needed(teacher_path, pseudo_path)
+        pseudo_split = _load_pseudo_label_split(pseudo_path)
+        print(
+            f"Pseudo-label split ready: total={len(pseudo_split)}, "
+            f"score_counts={get_label_distribution(pseudo_split)}"
+        )
+        train_split = concatenate_datasets([train_split, pseudo_split]).shuffle(seed=42)
+        val_split = val_split.shuffle(seed=42)
+        train_split, val_split = _apply_sample_limits(train_split, val_split)
+        print(
+            "BERT training stage=student: real multiclass + filtered soft pseudo labels. "
+            f"train_score_counts={get_label_distribution(train_split)}, "
+            f"val_score_counts={get_label_distribution(val_split)}"
+        )
+        return [*dataset_names, str(pseudo_path)], train_split, val_split, None
+
+    print("BERT training stage=legacy: using BERT_TRAIN_DATASETS directly.")
 
     # 从环境变量读取数据集名称列表，支持多个数据集用逗号分隔
     dataset_names = [
@@ -576,11 +1140,6 @@ def build_train_split_and_val_split():
         train_part = _maybe_apply_semi_supervised_binary_refinement(train_part, name, "train")
         if os.getenv("PSEUDO_LABEL_VALIDATION_SPLIT", "0") == "1":
             val_part = _maybe_apply_semi_supervised_binary_refinement(val_part, name, "val")
-
-        # DMSC 星级分布不均，对训练集和验证集分别做强制均衡
-        if name == "BerlinWang/DMSC":
-            train_part = _force_balance_score_split(train_part, name, "train", seed=42)
-            val_part = _force_balance_score_split(val_part, name, "val", seed=43)
 
         print(
             f"Dataset ready: {name} "

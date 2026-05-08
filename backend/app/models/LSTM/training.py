@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]  # SentimentFlow
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from ordinal_loss import DistanceAwareOrdinalLoss, OrdinalLossConfig
 from sentiment_scale import (
     LEGACY_BINARY_TO_SCORE,
     NUM_SENTIMENT_CLASSES,
@@ -220,8 +221,14 @@ def train():
     # 这让训练启动更快，也更省内存。
     model = Model(VOCAB_SIZE).to(device)
 
-    # 交叉熵损失用于多分类评分任务，标签为离散 0-5 分。
-    loss_fn = nn.CrossEntropyLoss()
+    # 序数距离感知损失：保留 6 类 logits，同时让相邻评分错误比跨极性错误惩罚更低。
+    loss_fn = DistanceAwareOrdinalLoss(
+        config=OrdinalLossConfig(
+            ce_weight=float(os.getenv("ORDINAL_CE_WEIGHT", "1.0")),
+            distance_weight=float(os.getenv("ORDINAL_DISTANCE_WEIGHT", "0.35")),
+            label_smoothing=float(os.getenv("ORDINAL_LABEL_SMOOTHING", "0.05")),
+        )
+    )
 
     # AdamW 是比较稳的优化器，通常比普通 SGD 更容易收敛。
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -267,8 +274,7 @@ def train():
                     optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
-            # 记录损失时用的是缩放后的 loss，主要用于观察趋势，不必特别精确。
-            total_loss += loss.detach()
+            total_loss += loss.detach() * grad_accum_steps
 
         # 如果最后几个 batch 没有凑满累积步数，也要补一次参数更新。
         if batch_count > 0 and step % grad_accum_steps != 0:
@@ -288,6 +294,7 @@ def train():
             "model_state_dict": model.state_dict(),
             "max_len": MAX_LEN,
             "vocab_size": VOCAB_SIZE,
+            "num_classes": NUM_SENTIMENT_CLASSES,
         },
         CHECKPOINT_PATH,
     )

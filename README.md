@@ -16,7 +16,7 @@
    - [运行推理](#运行推理)
 5. [BERT 模块详解](#bert-模块详解)
    - [config.py — 配置中心](#configpy--配置中心)
-   - [model.py — 模型定义](#modelpy--模型定义)
+   - [model.py — Hybrid Ordinal 模型定义](#modelpy--hybrid-ordinal-模型定义)
    - [text_processing.py — 文本处理](#text_processingpy--文本处理)
    - [dataset.py — 数据集](#datasetpy--数据集)
    - [data_sources.py — 多数据源构建](#data_sourcespy--多数据源构建)
@@ -24,7 +24,7 @@
    - [evaluate.py — 验证评估](#evaluatepy--验证评估)
    - [checkpoint.py — 模型保存与加载](#checkpointpy--模型保存与加载)
    - [pipeline.py — 加载或训练调度](#pipelinepy--加载或训练调度)
-   - [inference.py — 单条推理](#inferencepy--单条推理)
+   - [inference.py — 批量推理与部署导出](#inferencepy--批量推理与部署导出)
    - [main.py — 脚本入口](#mainpy--脚本入口)
 6. [支持的数据集](#支持的数据集)
 7. [环境变量参考](#环境变量参考)
@@ -47,12 +47,14 @@ SentimentFlow 是一个中文情感分析系统。**BERT 分支**用预训练的
 | 特性 | 说明 |
 |------|------|
 | 预训练骨干 | `hfl/chinese-roberta-wwm-ext`（可通过环境变量替换） |
-| 多数据源融合 | 一次配置，自动合并多个 Hugging Face 数据集 |
-| 平衡采样 | 对类别不均衡数据集（如 DMSC）自动做 force-balance |
-| 早停 | 基于验证集 Macro-F1 的 patience 早停机制 |
-| 加权损失 | 可选的类别权重交叉熵，缓解 0-5 评分分布失衡 |
+| 两阶段训练 | Teacher 仅用 DMSC/JD_review 真实多分类数据；Student 混合真实标签与高置信伪标签 |
+| 软伪标签 | Teacher 对二分类数据生成 0-5 soft pseudo labels，结合弱极性候选桶过滤，低置信样本直接丢弃 |
+| 早停 | 默认基于验证集 QWK 的 patience 早停机制 |
+| Hybrid ordinal 模型 | 6 类分类头 + 5 阈值 ordinal head + 连续评分回归头 |
+| 序数损失 | Class-balanced focal CE + ordinal BCE + expected-score / regression 距离惩罚 |
+| 类别不平衡 | Effective-number class weights、logit adjustment、分布感知过采样，保留全量数据 |
 | 梯度累积 | 在小显存 GPU 上模拟更大有效 batch |
-| 混合精度 | CUDA 下自动启用 float16 加速 |
+| 混合精度 | 支持 fp16 / bf16，可选 Accelerate |
 | 短句增强 | 支持合成短句数据集与从长文本提取短句的混合训练 |
 | 全栈集成 | FastAPI 后端 + Next.js 前端 + Docker Compose 一键部署 |
 
@@ -70,10 +72,11 @@ SentimentFlow/
 │   ├── dataset.py                 # CsvStreamDataset（支持 CSV / HF Dataset）
 │   ├── data_sources.py            # 多数据源加载、标签清洗、数据集别名
 │   ├── trainer.py                 # 完整训练主流程
-│   ├── evaluate.py                # 验证集 Accuracy / Macro-F1 计算
+│   ├── evaluate.py                # Accuracy / F1 / MAE / RMSE / QWK / Spearman
 │   ├── checkpoint.py              # 模型与 tokenizer 的保存 / 加载
 │   ├── pipeline.py                # load_or_train 调度入口
-│   ├── inference.py               # 单条文本推理
+│   ├── inference.py               # 批量推理、hybrid ordinal 评分、ONNX 导出
+│   ├── export.py                  # checkpoint -> ONNX CLI
 │   ├── main.py                    # run() 脚本入口
 │   ├── sample_texts.py            # 演示预测示例文本
 │   ├── custom_test_cases.py       # 自定义测试用例（质量验证）
@@ -176,26 +179,35 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 # 安装 Python 依赖
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install transformers datasets pandas jieba
+pip install transformers datasets pandas jieba accelerate
 ```
 
 ### 训练模型
 
 ```bash
-# 使用默认数据集（二分类旧数据 + 1-5 星级评分数据）训练 BERT 0-5 评分模型
+# Stage 1: 仅用真实多分类数据训练 Teacher
+BERT_TRAINING_STAGE=teacher \
+BERT_CHECKPOINT_PATH=models/bert_teacher \
+python BERT.py
+
+# Stage 2: Teacher 生成 soft pseudo labels，并训练 Student
+BERT_TRAINING_STAGE=student \
+BERT_TEACHER_CHECKPOINT_PATH=models/bert_teacher \
+PSEUDO_LABEL_PATH=pseudo_labels.jsonl \
+BERT_CHECKPOINT_PATH=models/bert_student \
 python BERT.py
 
 # 强制重新训练（忽略已有 checkpoint）
 BERT_FORCE_RETRAIN=1 python BERT.py
 
-# 自定义数据集与超参数
-BERT_TRAIN_DATASETS="lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/JD_review,BerlinWang/DMSC" \
+# 自定义超参数
 BERT_EPOCHS=3 \
 BERT_TRAIN_BATCH_SIZE=32 \
+BERT_TRAINING_STAGE=teacher \
 python BERT.py
 ```
 
-训练完成后，模型会保存到 `./bert_sentiment_model/`（HuggingFace 格式，含 `config.json`、`pytorch_model.bin`、tokenizer 配置及 `training_meta.json`）。
+训练完成后，模型会保存到 `./bert_sentiment_model/`（HuggingFace backbone + 自定义评分头，含 `config.json`、`model.safetensors`/`pytorch_model.bin`、`sentiment_model_state.pt`、tokenizer 配置及 `training_meta.json`）。
 
 ### 运行推理
 
@@ -230,21 +242,30 @@ BERT_MODEL_NAME = os.getenv("BERT_MODEL_NAME", "hfl/chinese-roberta-wwm-ext")
 
 ---
 
-### model.py — 模型定义
+### model.py — Hybrid Ordinal 模型定义
 
 ```python
 class SentimentBertModel(nn.Module):
     def __init__(self, model_name=BERT_MODEL_NAME):
         super().__init__()
-        self.backbone = AutoModelForSequenceClassification.from_pretrained(
-            model_name, num_labels=6
-        )
+        self.backbone = AutoModel.from_pretrained(model_name)
+        self.classifier = nn.Linear(hidden_size, 6)
+        self.ordinal_head = nn.Linear(hidden_size, 5)
+        self.regression_head = nn.Linear(hidden_size, 1)
 
-    def forward(self, input_ids, attention_mask):
-        return self.backbone(input_ids=input_ids, attention_mask=attention_mask).logits
+    def forward(self, input_ids, attention_mask, return_dict=False):
+        ...
+        return {
+            "logits": class_logits,
+            "ordinal_logits": ordinal_logits,
+            "score": score,
+        }
 ```
 
-- 直接使用 `AutoModelForSequenceClassification`，HuggingFace 自动接上 6 分类输出头。
+- 默认架构为 `BERT_MODEL_ARCHITECTURE=hybrid`，同时学习 6 类分类概率、5 个累计阈值和连续评分。
+- `ordinal_logits` 对应 `P(score > k)`，用于建模 `0 < 1 < 2 < 3 < 4 < 5` 的序关系。
+- `score` 回归头用于校准评分距离，缓解“预测 5 错成 4”和“预测 5 错成 0”惩罚相同的问题。
+- `BERT_MODEL_ARCHITECTURE=sequence` 保留旧 checkpoint 兼容路径。
 - 支持任意兼容的中文 BERT/RoBERTa 模型，只需修改 `BERT_MODEL_NAME`。
 
 ---
@@ -277,11 +298,11 @@ def encode_text(text, max_len):
 1. **CSV 文件**：按 `chunk_size` 流式读取，适合超大文件，避免内存爆炸。
 2. **HuggingFace Dataset 对象**：直接索引访问，支持多 worker 分片。
 
-**关键设计**：Dataset 只返回 `(text, label)` 原始字符串，不在单条样本层面 tokenize。批量 tokenize 由 DataLoader 的 `collate_fn` 统一完成，大幅提升吞吐量。
+**关键设计**：BERT Dataset 返回标准训练记录 `{text, label, soft_labels, sample_weight, label_source}`，不在单条样本层面 tokenize。批量 tokenize 由 DataLoader 的 `collate_fn` 统一完成，大幅提升吞吐量。
 
-`label_map` 参数可将原始标签映射到 `{0, 1, 2, 3, 4, 5}`，`-1` 表示跳过该样本。旧二分类数据自动按 `0 -> 0`、`1 -> 5` 迁移。
+`label_map` 参数可将原始标签映射到 `{0, 1, 2, 3, 4, 5}`，`-1` 表示跳过该样本。CSV/legacy 兼容路径仍可把旧二分类数据按 `0 -> 0`、`1 -> 5` 迁移，但两阶段 BERT 主流程不会把这种端点映射样本直接用于 Teacher。
 
-CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 判断：只有整份 CSV 的标签集合确认为 `{0, 1}` 时才会自动迁移，真实 0-5 CSV 中的 `1` 分会保持为 `1`。若你的数据集只有 `0/1` 两档但语义是 0-5 评分子集，可设置 `MIGRATE_LEGACY_BINARY_LABELS=0` 关闭自动迁移。
+CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 判断：只有整份 CSV 的标签集合确认为 `{0, 1}` 时才会自动迁移，真实 0-5 CSV 中的 `1` 分会保持为 `1`。两阶段 BERT 训练不会把二分类数据直接映射到 0/5 参与 Teacher 训练；二分类数据只在 Student 阶段由 Teacher 生成 soft pseudo labels 后使用。
 
 ---
 
@@ -293,10 +314,14 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 2. **数据集加载**：通过 `datasets.load_dataset()` 下载，自动处理 `train / validation / test` 分割；若数据集无验证集，则按 `TRAIN_VAL_RATIO` 自动切分。
 3. **标签清洗**（`_normalize_split_columns`）：
    - 自动识别文本列和标签列（支持多种列名格式）。
-   - 将多元标签统一转换为 0-5 情感评分；1-5 星级数据映射到评分档位，旧 0/1 数据迁移到 0/5。
-4. **平衡采样**（`_force_balance_score_split`）：对 DMSC 等评分分布不均的数据集，按存在的评分类别做下采样均衡。
-5. **多数据集合并**：用 `datasets.concatenate_datasets` 拼接，再整体 shuffle。
-6. **短句增强**（可选）：
+   - 将多元标签统一转换为 0-5 情感评分；1-5 星级数据映射到评分档位；旧 0/1 端点迁移只保留在 legacy 兼容路径。
+4. **阶段路由**：
+   - `teacher`：只加载 `BerlinWang/DMSC` 与 `dirtycomputer/JD_review`。
+   - `student`：加载真实多分类数据，并读取/生成 `pseudo_labels.jsonl`。
+   - `legacy`：保留旧的直接多数据集训练入口，仅用于兼容。
+5. **伪标签生成**：Teacher 输出 logits，经 temperature scaling + softmax 得到概率；结合二分类弱极性候选桶选择 0-5 分，仅保留 `confidence >= 0.75` 的样本。
+6. **多数据集合并**：真实标签与伪标签用统一 schema 拼接，伪标签默认 `sample_weight=0.3`。
+7. **短句增强**（legacy 可选）：
    - `USE_EXTRACTED_SHORT_SENTENCES=1`：加载 `BERT/extracted_short_sentences.csv` 混入短句。
    - `USE_SYNTHETIC_DATA=1`：使用 `generate_synthetic_data.py` 生成合成短句。
 
@@ -310,13 +335,15 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 初始化设备 (CUDA / CPU)
 → 获取运行时配置 (RuntimeSettings)
 → 加载并合并多数据集
-→ 统计 0-5 样本分布，构建加权 CrossEntropyLoss（可选）
+→ 统计 0-5 样本分布，构建 class weights（可选）
 → 构建 DataLoader（批量 tokenize via collate_fn）
-→ 初始化 SentimentBertModel，AdamW + LinearWarmup 调度器
-→ 混合精度训练循环（GradScaler）+ 梯度累积
-→ 每 epoch 结束后在验证集评估 Accuracy / Macro-F1 / Weighted-F1 / MAE / QWK
-→ 保存最优 checkpoint（基于 val_f1）
-→ 早停（patience 轮 val_f1 不提升则提前结束）
+→ 初始化 SentimentBertModel，AdamW
+→ 使用 DistanceAwareOrdinalLoss（soft CE + expected-score distance）
+→ hybrid ordinal loss：class-balanced focal CE + ordinal BCE + SmoothL1 score distance
+→ 混合精度训练循环（fp16/bf16）+ 梯度累积 + cosine warmup
+→ 每 epoch 结束后在验证集评估 Accuracy / Macro-F1 / Weighted-F1 / MAE / RMSE / QWK / Spearman
+→ 保存最优 checkpoint（默认基于 QWK）
+→ 早停（patience 轮 selection metric 不提升则提前结束）
 → 加载最优 checkpoint 返回
 ```
 
@@ -327,9 +354,16 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 | 批量 tokenize | `collate_fn` 一次处理整批文本，避免逐条 tokenize |
 | 混合精度 | `torch.amp.GradScaler` + `autocast`，CUDA 下自动启用 |
 | 梯度累积 | `BERT_TRAIN_ACCUM_STEPS` 控制，小显存下模拟大 batch |
-| 加权损失 | `BERT_TRAIN_WEIGHTED_LOSS=1` 时按 0-5 各评分样本比例加权 |
+| Hybrid ordinal loss | 分类、累计阈值、连续评分三头联合训练 |
+| Focal + class-balanced loss | `FOCAL_GAMMA`、`CLASS_BALANCED_BETA` 抑制多数类主导 |
+| Logit adjustment | `LOGIT_ADJUSTMENT_WEIGHT` 按类别先验修正偏置 |
+| 缺失类插值 | `BERT_INTERPOLATE_MISSING_LABELS=1` 为 score=2 等缺失档生成低权重 soft labels |
+| 分布感知过采样 | `BERT_DISTRIBUTION_AWARE_OVERSAMPLING=1` 只追加少数类样本，不裁剪多数类 |
+| Layer-wise LR decay | `BERT_LAYERWISE_LR_DECAY` 让底层 backbone 更稳定 |
+| Cosine warmup | `BERT_SCHEDULER=cosine`、`BERT_WARMUP_RATIO=0.06` |
+| Resume | `BERT_RESUME_FROM_CHECKPOINT` 加载权重与 `trainer_state.pt` |
 | 早停 | `BERT_EARLY_STOP_PATIENCE` 控制容忍轮数 |
-| 最优 checkpoint | 按验证集 Macro-F1 保存最优，训练结束后自动恢复 |
+| 最优 checkpoint | 默认按验证集 QWK 保存最优，训练结束后自动恢复 |
 
 ---
 
@@ -339,8 +373,12 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 
 - **Accuracy**：`(TP + TN) / Total`
 - **Macro-F1**：各存在评分类别 F1 的算术平均，更能反映类别不平衡下的真实性能
+- **Weighted-F1 / Per-class F1**：观察多数类和少数类表现是否分裂
+- **MAE / RMSE**：评分距离误差
+- **QWK**：核心选模指标，适合 0-5 有序评分
+- **Spearman**：预测排序与真实评分排序的一致性
 
-采用与训练相同的 `bert_collate_fn`，保证评估和训练的 tokenize 行为完全一致。
+采用与训练相同的 `bert_collate_fn`，并通过 hybrid 输出计算最终离散评分，保证评估和推理使用同一评分逻辑。
 
 ---
 
@@ -352,9 +390,10 @@ CSV 数据的旧二分类识别按整份文件判断，而不是按单个 chunk 
 bert_sentiment_model/
 ├── config.json          # HuggingFace 模型配置
 ├── pytorch_model.bin    # 模型权重（或 safetensors）
+├── sentiment_model_state.pt # hybrid 分类/ordinal/回归头完整权重
 ├── tokenizer_config.json
 ├── vocab.txt
-└── training_meta.json   # 训练元信息（max_len, model_name, best_val_f1, best_epoch）
+└── training_meta.json   # 训练元信息（max_len, model_name, architecture, QWK, MAE 等）
 ```
 
 **加载**（`load_checkpoint`）：从 `training_meta.json` 恢复 `model_name` 和 `max_len`，保证推理时与训练时参数完全一致。
@@ -377,9 +416,9 @@ return train_model()
 
 ---
 
-### inference.py — 单条推理
+### inference.py — 批量推理与部署导出
 
-`predict_text(text, model, device, max_len)` 返回结构化预测结果：
+`predict_text(text, model, device, max_len)` 和 `predict_batch(texts, model, device)` 返回结构化预测结果：
 
 ```python
 {
@@ -393,7 +432,16 @@ return train_model()
 }
 ```
 
-使用 `torch.inference_mode()` 关闭梯度计算，并通过 `softmax` 将 6 维 logits 转换为概率，取概率最高的评分作为最终预测。
+推理会保留 6 类 softmax 概率契约，同时用 classification expected score、ordinal threshold head 和 regression head 融合得到最终 0-5 分。可选优化：
+
+- `BERT_INFERENCE_BATCH_SIZE=64`：批量推理动态 padding。
+- `BERT_INFERENCE_TORCH_COMPILE=1`：启用 `torch.compile` 推理。
+- `BERT_DYNAMIC_QUANTIZATION=1`：CPU 上启用 Linear 动态 int8 量化。
+- ONNX 导出：
+
+```bash
+python -m BERT.export models/bert_student exports/bert_student.onnx --max-len 128
+```
 
 ---
 
@@ -413,13 +461,13 @@ return train_model()
 
 | 数据集 | HuggingFace 名称 | 类型 | 说明 |
 |--------|-----------------|------|------|
-| ChnSentiCorp | `lansinuote/ChnSentiCorp` | 默认 | 旧二分类数据，自动 0→0 / 1→5 |
-| 外卖评论 | `XiangPan/waimai_10k` | 默认 | 旧二分类数据，自动 0→0 / 1→5 |
-| 微博情感 | `dirtycomputer/weibo_senti_100k` | 可选 | 旧二分类数据，自动 0→0 / 1→5 |
-| JD 商品评论 | `dirtycomputer/JD_review` | 默认 | 京东评论，1-5 星映射到 0-5 评分 |
-| NLPCC14-SC | `ndiy/NLPCC14-SC` | 可选 | NLPCC 2014 情感评测数据 |
-| 酒店评论 | `dirtycomputer/ChnSentiCorp_htl_all` | 可选 | ChnSentiCorp 酒店完整版 |
-| DMSC | `BerlinWang/DMSC` | 默认 | 豆瓣影评，1-5 星，自动平衡 |
+| DMSC | `BerlinWang/DMSC` | Teacher/Student real | 豆瓣影评，1-5 星映射到 0-5 评分 |
+| JD 商品评论 | `dirtycomputer/JD_review` | Teacher/Student real | 京东评论，1-5 星映射到 0-5 评分 |
+| ChnSentiCorp | `lansinuote/ChnSentiCorp` | Student pseudo | 二分类弱标签，只由 Teacher 生成 soft pseudo labels |
+| 外卖评论 | `XiangPan/waimai_10k` | Student pseudo | 二分类弱标签，只由 Teacher 生成 soft pseudo labels |
+| 微博情感 | `dirtycomputer/weibo_senti_100k` | Student pseudo | 二分类弱标签，只由 Teacher 生成 soft pseudo labels |
+| NLPCC14-SC | `ndiy/NLPCC14-SC` | Student pseudo | 二分类弱标签，只由 Teacher 生成 soft pseudo labels |
+| 酒店评论 | `dirtycomputer/ChnSentiCorp_htl_all` | Student pseudo | 二分类弱标签，只由 Teacher 生成 soft pseudo labels |
 
 **使用别名**（`DATASET_ALIASES`）时，可以用简写名：
 
@@ -442,6 +490,10 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 | `BERT_EPOCHS` | `5` | 最大训练轮数 |
 | `BERT_CHECKPOINT_PATH` | `./bert_sentiment_model` | Checkpoint 保存目录 |
 | `BERT_FORCE_RETRAIN` | `0` | `1` = 忽略已有 checkpoint，强制重新训练 |
+| `BERT_TRAINING_STAGE` | `auto` | `teacher` / `student` / `legacy`；`auto` 有 teacher path 时走 student，否则走 teacher |
+| `BERT_RESUME_FROM_CHECKPOINT` | 空 | 从已有 BERT checkpoint 恢复模型权重，并尽量恢复 `trainer_state.pt` |
+| `BERT_MODEL_ARCHITECTURE` | `hybrid` | `hybrid` = 分类 + ordinal + 回归三头；`sequence` 仅用于旧 checkpoint 兼容 |
+| `BERT_SELECTION_METRIC` | `qwk` | 最优 checkpoint/早停选模指标，可设 `qwk` / `macro_f1` / `weighted_f1` / `mae` |
 
 ### 运行时参数
 
@@ -453,39 +505,94 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 | `BERT_TRAIN_ACCUM_STEPS` | `1` | 梯度累积步数 |
 | `BERT_TRAIN_CHUNK_SIZE` | `batch_size * 8` | CSV 流式读取块大小 |
 | `BERT_TRAIN_LR` | `2e-5` | AdamW 学习率 |
-| `BERT_TRAIN_WEIGHTED_LOSS` | `1` | `1` = 启用加权交叉熵损失 |
+| `BERT_WEIGHT_DECAY` | `0.01` | AdamW weight decay |
+| `BERT_LAYERWISE_LR_DECAY` | `0.9` | backbone 层级学习率衰减 |
+| `BERT_HEAD_LR_MULTIPLIER` | `2.0` | 分类/ordinal/回归头学习率倍率 |
+| `BERT_SCHEDULER` | `cosine` | `cosine` / `linear` / `none` |
+| `BERT_WARMUP_RATIO` | `0.06` | scheduler warmup 比例 |
+| `BERT_TRAIN_WEIGHTED_LOSS` | `1` | `1` = 启用 class-weighted ordinal loss |
+| `BERT_GRADIENT_CHECKPOINTING` | `1` | `1` = 启用 backbone gradient checkpointing |
+| `BERT_MIXED_PRECISION` | `fp16` | `fp16` / `bf16` |
+| `BERT_USE_ACCELERATE` | `0` | `1` = 使用 HuggingFace Accelerate（需通过 accelerate launch 启动） |
+| `BERT_FUSED_ADAMW` | `1` | CUDA 下优先使用 fused AdamW |
+| `BERT_TORCH_COMPILE` | `0` | 实验性训练编译，默认关闭以保证 checkpoint/resume 稳定 |
+
+### Loss 与类别不平衡
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ORDINAL_CE_WEIGHT` | `1.0` | 6 类 soft CE 权重 |
+| `ORDINAL_DISTANCE_WEIGHT` | `0.35` | 期望评分 SmoothL1 距离损失权重 |
+| `ORDINAL_BCE_WEIGHT` | `0.5` | 累计阈值 BCE 权重 |
+| `ORDINAL_REGRESSION_WEIGHT` | `0.2` | 连续评分回归损失权重 |
+| `ORDINAL_LABEL_SMOOTHING` | `0.05` | 真实标签 smoothing |
+| `PSEUDO_LABEL_SMOOTHING` | `0.02` | 伪标签 smoothing |
+| `FOCAL_GAMMA` | `1.5` | focal loss gamma |
+| `CLASS_BALANCED_BETA` | `0.9999` | effective number class-balanced loss beta |
+| `LOGIT_ADJUSTMENT_WEIGHT` | `0.3` | 类别先验 logit adjustment 权重 |
+| `BERT_INTERPOLATE_MISSING_LABELS` | `1` | 对真实多分类数据中缺失的中间评分生成低权重 soft-label 样本 |
+| `INTERPOLATED_LABEL_RATIO` | `0.15` | 缺失类插值样本占邻域样本比例 |
+| `INTERPOLATED_LABEL_WEIGHT` | `0.2` | 插值样本训练权重 |
+| `BERT_DISTRIBUTION_AWARE_OVERSAMPLING` | `1` | 追加少数类样本，不进行 force-balanced downsampling |
+| `BERT_OVERSAMPLE_TEMPERATURE` | `0.5` | sqrt 风格过采样强度 |
+| `BERT_OVERSAMPLE_MAX_ADDED` | `500000` | 过采样最多追加样本数 |
+| `BERT_PSEUDO_CURRICULUM_EPOCHS` | `2` | Student 阶段伪标签/插值标签权重渐进升温 epoch 数 |
+| `BERT_PSEUDO_CURRICULUM_START_SCALE` | `0.3` | 课程学习开始时伪标签/插值样本额外缩放系数 |
 
 ### 早停
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `BERT_EARLY_STOP_PATIENCE` | `2` | 容忍验证集 F1 不提升的轮数（0 = 关闭早停） |
-| `BERT_EARLY_STOP_MIN_DELTA` | `0.0005` | F1 提升的最小门槛 |
+| `BERT_EARLY_STOP_PATIENCE` | `2` | 容忍 selection metric 不提升的轮数（0 = 关闭早停） |
+| `BERT_EARLY_STOP_MIN_DELTA` | `0.0005` | selection metric 提升的最小门槛 |
 
 ### 数据集
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `BERT_TRAIN_DATASETS` | `lansinuote/ChnSentiCorp,XiangPan/waimai_10k,dirtycomputer/JD_review,BerlinWang/DMSC` | 逗号分隔的数据集名称列表，也支持本地 CSV 路径 |
+| `BERT_TEACHER_DATASETS` | `BerlinWang/DMSC,dirtycomputer/JD_review` | Teacher/Student 真实多分类数据白名单；传入其他数据会报错 |
+| `BERT_BINARY_PSEUDO_DATASETS` | 五个二分类数据集 | Student 阶段用于生成伪标签的二分类数据白名单 |
+| `BERT_TRAIN_DATASETS` | 多数据集列表 | 仅 `BERT_TRAINING_STAGE=legacy` 使用 |
 | `TRAIN_VAL_RATIO` | `0.1` | 无 validation split 时自动切分比例 |
 | `TRAIN_MAX_SAMPLES` | `0`（不限） | 训练集最大样本数 |
 | `TRAIN_MAX_VAL_SAMPLES` | `0`（不限） | 验证集最大样本数 |
 | `MIGRATE_LEGACY_BINARY_LABELS` | `auto` | 自动识别旧 0/1 标签并迁移到 0/5；设为 `0` 可关闭 |
 
-### 半监督 0/1 细分
+### Teacher / Student 伪标签
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `SEMI_SUPERVISED_01_TO_05` | `auto` | `0` 关闭；其他值表示尝试用 teacher 将旧 0/1 数据细分到 0-5 |
-| `PSEUDO_LABEL_TEACHER_PATH` | 空 | 通用 teacher checkpoint 路径 |
-| `LSTM_PSEUDO_LABEL_TEACHER_PATH` | 空 | LSTM 专用 teacher `.pt` 路径 |
-| `BERT_PSEUDO_LABEL_TEACHER_PATH` | 空 | BERT 专用 teacher 目录 |
-| `PSEUDO_LABEL_MIN_CONFIDENCE` | `0.45` | teacher 伪标签最低置信度 |
-| `PSEUDO_LABEL_FALLBACK_TO_ENDPOINT` | `1` | 低置信度时保留弱标签端点：`0->0`、`1->5` |
+| `BERT_TEACHER_CHECKPOINT_PATH` | 空 | Student 阶段必填；指向 Stage 1 Teacher checkpoint 目录 |
+| `BERT_PSEUDO_LABEL_TEACHER_PATH` | 空 | BERT teacher 路径兼容别名 |
+| `PSEUDO_LABEL_TEACHER_PATH` | 空 | 通用 teacher 路径兼容别名 |
+| `PSEUDO_LABEL_PATH` | `pseudo_labels.jsonl` | 伪标签缓存文件，支持断点追加和重复跳过 |
+| `PSEUDO_LABEL_MIN_CONFIDENCE` | `0.75` | teacher 伪标签最低置信度，低于阈值直接丢弃 |
+| `PSEUDO_LABEL_TEMPERATURE` | `1.5` | logits temperature scaling |
+| `PSEUDO_LABEL_WEIGHT` | `0.3` | Student 训练中伪标签样本权重 |
+| `REAL_LABEL_WEIGHT` | `1.0` | Student 训练中真实标签样本权重 |
+| `PSEUDO_LABEL_FALLBACK_TO_ENDPOINT` | `0` | 仅 legacy 兼容项；默认禁止低置信样本回退到 `0/5` |
 | `PSEUDO_LABEL_BATCH_SIZE` | LSTM `128` / BERT `64` | teacher 推理 batch 大小 |
-| `PSEUDO_LABEL_VALIDATION_SPLIT` | `0` | 是否也对 validation split 打伪标签；默认只处理训练集 |
+| `PSEUDO_LABEL_MAX_SAMPLES` | `0`（不限） | 伪标签生成样本上限，仅用于调试 |
 
-半监督细分会保留 0/1 弱标签的极性约束：原始 `0` 只会被细分为 `0/1/2`，原始 `1` 只会被细分为 `4/5`。这避免 teacher 把弱负面样本误打成正面，或把弱正面样本误打成负面。
+`pseudo_labels.jsonl` 每行包含：
+
+```json
+{"text":"...", "score":4, "confidence":0.87, "probabilities":[0.01,0.02,0.03,0.07,0.82,0.05]}
+```
+
+Student 训练读取 `probabilities` 作为 soft labels，并通过 `sample_weight` 让伪标签贡献低于真实标签。
+
+### 推理与部署
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `BERT_INFERENCE_BATCH_SIZE` | `64` | BERT 批量推理 batch 大小 |
+| `BERT_INFERENCE_TEMPERATURE` | `1.0` | 推理 softmax temperature |
+| `BERT_INFERENCE_CLASS_WEIGHT` | `0.7` | hybrid 推理中分类期望分权重 |
+| `BERT_INFERENCE_ORDINAL_WEIGHT` | `0.2` | hybrid 推理中 ordinal head 权重 |
+| `BERT_INFERENCE_REGRESSION_WEIGHT` | `0.1` | hybrid 推理中回归头权重 |
+| `BERT_INFERENCE_TORCH_COMPILE` | `0` | 后端加载 BERT 后启用 `torch.compile` 推理 |
+| `BERT_DYNAMIC_QUANTIZATION` | `0` | CPU 推理时启用 Linear 动态 int8 量化 |
 
 ### 短句增强
 
@@ -514,8 +621,11 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+训练时不要使用 `--reload`。热重载会在 `.env`、代码或缓存文件变化时重启
+`uvicorn` 进程，正在后台线程中运行的训练任务会被直接中断。
 
 访问 Swagger 文档：http://localhost:8000/docs
 
@@ -608,7 +718,7 @@ docker compose up --build
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| `backend` | `8000` | FastAPI 后端，挂载 `./backend` 目录，支持热重载 |
+| `backend` | `8000` | FastAPI 后端；训练场景默认关闭热重载，避免重启中断训练 |
 | `frontend` | `3000` | Next.js 前端，Node.js 20 官方镜像 |
 
 **注意**：BERT 模型文件（`bert_sentiment_model/`）体积较大，建议在启动 Docker 前先完成训练，并将 checkpoint 目录挂载到容器内，或通过 `BERT_CHECKPOINT_PATH` 指向共享卷。
@@ -672,7 +782,8 @@ _, _, val_split, _ = build_train_split_and_val_split()
 metrics = evaluate(model, val_split, device, batch_size=64, max_len=128)
 print(
     f"Accuracy: {metrics.accuracy:.4f}, Macro-F1: {metrics.macro_f1:.4f}, "
-    f"MAE: {metrics.mae:.4f}, QWK: {metrics.quadratic_weighted_kappa:.4f}"
+    f"MAE: {metrics.mae:.4f}, RMSE: {metrics.rmse:.4f}, "
+    f"QWK: {metrics.quadratic_weighted_kappa:.4f}, Spearman: {metrics.spearman:.4f}"
 )
 ```
 

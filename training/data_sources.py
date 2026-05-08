@@ -195,38 +195,6 @@ def _normalize_split_columns(split, dataset_name: str, preserve_label: bool = Fa
     return _project_standard_columns(split)
 
 
-def _force_balance_score_split(split, dataset_name: str, split_name: str, seed: int = 42):
-    """对 0-5 评分数据集按存在的类别做下采样均衡。"""
-    class_splits = {
-        score: split.filter(lambda row, s=score: int(row["label"]) == s)
-        for score in SENTIMENT_SCORES
-    }
-    class_counts = {score: len(class_split) for score, class_split in class_splits.items()}
-    present_counts = [count for count in class_counts.values() if count > 0]
-
-    if len(present_counts) < 2:
-        print(
-            f"Warning: Skip force-balance for {dataset_name} {split_name} "
-            f"because fewer than two score classes are present: {class_counts}."
-        )
-        return split
-
-    min_count = min(present_counts)
-    from datasets import concatenate_datasets
-
-    balanced_parts = [
-        class_split.shuffle(seed=seed + score).select(range(min_count))
-        for score, class_split in class_splits.items()
-        if len(class_split) > 0
-    ]
-    balanced = concatenate_datasets(balanced_parts).shuffle(seed=seed)
-    print(
-        f"Force-balanced {dataset_name} {split_name}: "
-        f"per_class={class_counts}, kept_per_present_class={min_count}, total={len(balanced)}"
-    )
-    return balanced
-
-
 def _semi_supervised_enabled() -> bool:
     raw = os.getenv("SEMI_SUPERVISED_01_TO_05", "auto").strip().lower()
     return raw not in {"0", "false", "no", "off"}
@@ -289,8 +257,8 @@ def _maybe_apply_semi_supervised_binary_refinement(split, dataset_name: str, spl
             )
             return split
 
-        min_confidence = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.45"))
-        fallback_to_endpoint = os.getenv("PSEUDO_LABEL_FALLBACK_TO_ENDPOINT", "1") == "1"
+        min_confidence = float(os.getenv("PSEUDO_LABEL_MIN_CONFIDENCE", "0.75"))
+        fallback_to_endpoint = os.getenv("PSEUDO_LABEL_FALLBACK_TO_ENDPOINT", "0") == "1"
         batch_size = max(1, int(os.getenv("PSEUDO_LABEL_BATCH_SIZE", "128")))
         teacher.eval()
 
@@ -498,11 +466,6 @@ def build_train_split_and_val_split():
         train_part = _maybe_apply_semi_supervised_binary_refinement(train_part, name, "train")
         if os.getenv("PSEUDO_LABEL_VALIDATION_SPLIT", "0") == "1":
             val_part = _maybe_apply_semi_supervised_binary_refinement(val_part, name, "val")
-
-        # 针对 DMSC 强制平衡，避免星级长尾让评分头塌缩到多数类。
-        if name == "BerlinWang/DMSC":
-            train_part = _force_balance_score_split(train_part, name, "train", seed=42)
-            val_part = _force_balance_score_split(val_part, name, "val", seed=43)
 
         print(
             f"Dataset ready: {name} "

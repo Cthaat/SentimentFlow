@@ -222,7 +222,7 @@ def choose_score_from_binary_teacher_probabilities(
     binary_label: int,
     *,
     min_confidence: float,
-    fallback_to_endpoint: bool = True,
+    fallback_to_endpoint: bool = False,
 ) -> dict:
     """Choose a 0-5 pseudo label from teacher probabilities and a weak 0/1 label.
 
@@ -230,9 +230,9 @@ def choose_score_from_binary_teacher_probabilities(
     - 0 may only become 0/1/2
     - 1 may only become 4/5
 
-    If the best constrained score is below ``min_confidence``, the caller can
-    either keep the endpoint label (0 or 5) or skip the sample by setting
-    ``fallback_to_endpoint=False``.
+    If the best constrained score is below ``min_confidence``, the default
+    behavior is to reject the sample. ``fallback_to_endpoint=True`` is kept
+    only for explicit legacy compatibility.
     """
     weak_label = int(binary_label)
     if weak_label not in LEGACY_BINARY_TO_SCORE:
@@ -297,7 +297,9 @@ def compute_classification_metrics(
             "macro_f1": 0.0,
             "weighted_f1": 0.0,
             "mae": 0.0,
+            "rmse": 0.0,
             "quadratic_weighted_kappa": 0.0,
+            "spearman": 0.0,
             "confusion_matrix": confusion_matrix,
             "support": [0 for _ in range(num_classes)],
             "per_class_f1": [0.0 for _ in range(num_classes)],
@@ -324,14 +326,18 @@ def compute_classification_metrics(
     weighted_f1 = sum(per_class_f1[index] * support[index] for index in range(num_classes)) / total
     accuracy = sum(confusion_matrix[index][index] for index in range(num_classes)) / total
     mae = sum(abs(true - pred) for true, pred in zip(true_list, pred_list)) / total
+    rmse = math.sqrt(sum((true - pred) ** 2 for true, pred in zip(true_list, pred_list)) / total)
     qwk = _quadratic_weighted_kappa(confusion_matrix, support, predicted_support, total)
+    spearman = _spearman_correlation(true_list, pred_list)
 
     return {
         "accuracy": accuracy,
         "macro_f1": macro_f1,
         "weighted_f1": weighted_f1,
         "mae": mae,
+        "rmse": rmse,
         "quadratic_weighted_kappa": qwk,
+        "spearman": spearman,
         "confusion_matrix": confusion_matrix,
         "support": support,
         "per_class_f1": per_class_f1,
@@ -359,3 +365,35 @@ def _quadratic_weighted_kappa(
     if expected == 0:
         return 1.0 if observed == 0 else 0.0
     return 1.0 - observed / expected
+
+
+def _spearman_correlation(true_labels: list[int], pred_labels: list[int]) -> float:
+    if len(true_labels) < 2:
+        return 0.0
+    true_ranks = _average_ranks(true_labels)
+    pred_ranks = _average_ranks(pred_labels)
+    true_mean = sum(true_ranks) / len(true_ranks)
+    pred_mean = sum(pred_ranks) / len(pred_ranks)
+    numerator = sum((left - true_mean) * (right - pred_mean) for left, right in zip(true_ranks, pred_ranks))
+    true_var = sum((value - true_mean) ** 2 for value in true_ranks)
+    pred_var = sum((value - pred_mean) ** 2 for value in pred_ranks)
+    denominator = math.sqrt(true_var * pred_var)
+    if denominator <= 1e-12:
+        return 0.0
+    return numerator / denominator
+
+
+def _average_ranks(values: list[int]) -> list[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0 for _ in values]
+    cursor = 0
+    while cursor < len(indexed):
+        next_cursor = cursor + 1
+        while next_cursor < len(indexed) and indexed[next_cursor][1] == indexed[cursor][1]:
+            next_cursor += 1
+        average_rank = (cursor + 1 + next_cursor) / 2.0
+        for index in range(cursor, next_cursor):
+            original_index = indexed[index][0]
+            ranks[original_index] = average_rank
+        cursor = next_cursor
+    return ranks

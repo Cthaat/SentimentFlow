@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import torch
-import torch.nn as nn
 from datasets import Dataset
 
+from ordinal_loss import DistanceAwareOrdinalLoss
 from sentiment_scale import (
     NUM_SENTIMENT_CLASSES,
     choose_score_from_binary_teacher_probabilities,
@@ -20,12 +22,19 @@ from training.data_sources import (
     _normalize_split_columns,
     _normalize_short_sentence_labels,
 )
-from BERT.data_sources import _normalize_short_sentence_labels as _normalize_bert_short_sentence_labels
+from BERT.data_sources import (
+    _load_pseudo_label_split,
+    _normalize_short_sentence_labels as _normalize_bert_short_sentence_labels,
+    _infer_teacher_num_labels,
+    _teacher_dataset_names,
+    _with_training_columns,
+)
 from training.dataset import CsvStreamDataset as LstmCsvStreamDataset
 from training.evaluate import evaluate
 from training.inference import predict_text
 from training.model import SentimentLSTMModel
 from BERT.dataset import CsvStreamDataset as BertCsvStreamDataset
+from BERT.inference import outputs_to_predictions, predicted_classes_from_outputs
 
 
 class SentimentScaleContractTest(unittest.TestCase):
@@ -53,7 +62,9 @@ class SentimentScaleContractTest(unittest.TestCase):
         self.assertEqual(metrics["macro_f1"], 1.0)
         self.assertEqual(metrics["weighted_f1"], 1.0)
         self.assertEqual(metrics["mae"], 0.0)
+        self.assertEqual(metrics["rmse"], 0.0)
         self.assertEqual(metrics["quadratic_weighted_kappa"], 1.0)
+        self.assertEqual(metrics["spearman"], 1.0)
         self.assertEqual(len(metrics["confusion_matrix"]), NUM_SENTIMENT_CLASSES)
 
     def test_binary_constrained_teacher_choice(self) -> None:
@@ -74,7 +85,7 @@ class SentimentScaleContractTest(unittest.TestCase):
         )
         self.assertEqual(negative_choice["score"], 2)
         self.assertEqual(positive_choice["score"], 4)
-        self.assertEqual(fallback_choice["score"], 5)
+        self.assertEqual(fallback_choice["score"], -1)
         self.assertFalse(fallback_choice["accepted"])
 
 
@@ -88,7 +99,7 @@ class TrainingSmokeTest(unittest.TestCase):
         logits = model(inputs)
         self.assertEqual(tuple(logits.shape), (6, NUM_SENTIMENT_CLASSES))
 
-        loss = nn.CrossEntropyLoss()(logits, labels)
+        loss = DistanceAwareOrdinalLoss()(logits, labels)
         loss.backward()
 
         split = [
@@ -120,8 +131,6 @@ class TrainingSmokeTest(unittest.TestCase):
                 },
                 checkpoint_path,
             )
-
-            import os
 
             previous_env = {
                 "PSEUDO_LABEL_TEACHER_PATH": os.environ.get("PSEUDO_LABEL_TEACHER_PATH"),
@@ -185,8 +194,8 @@ class TrainingSmokeTest(unittest.TestCase):
                     )
                 )
                 bert_six_labels = sorted(
-                    int(label)
-                    for _, label in BertCsvStreamDataset(
+                    int(record["label"])
+                    for record in BertCsvStreamDataset(
                         six_score_path,
                         chunk_size=2,
                     )
@@ -201,8 +210,8 @@ class TrainingSmokeTest(unittest.TestCase):
                     )
                 )
                 bert_binary_labels = sorted(
-                    int(label)
-                    for _, label in BertCsvStreamDataset(
+                    int(record["label"])
+                    for record in BertCsvStreamDataset(
                         binary_path,
                         chunk_size=2,
                     )
@@ -230,6 +239,134 @@ class TrainingSmokeTest(unittest.TestCase):
         raw_rows = [("明显负面", 1), ("极端正面", 5), ("中性", 3)]
         self.assertEqual(_normalize_short_sentence_labels(raw_rows), raw_rows)
         self.assertEqual(_normalize_bert_short_sentence_labels(raw_rows), raw_rows)
+
+    def test_distance_aware_ordinal_loss_supports_soft_labels_and_weights(self) -> None:
+        logits = torch.randn(3, NUM_SENTIMENT_CLASSES, requires_grad=True)
+        ordinal_logits = torch.randn(3, NUM_SENTIMENT_CLASSES - 1, requires_grad=True)
+        score = torch.randn(3, requires_grad=True)
+        labels = torch.tensor([0, 3, 5], dtype=torch.long)
+        soft_labels = torch.tensor(
+            [
+                [0.70, 0.20, 0.10, 0.00, 0.00, 0.00],
+                [0.00, 0.05, 0.15, 0.60, 0.15, 0.05],
+                [0.00, 0.00, 0.00, 0.05, 0.20, 0.75],
+            ],
+            dtype=torch.float32,
+        )
+        sample_weights = torch.tensor([1.0, 0.3, 0.3], dtype=torch.float32)
+
+        loss = DistanceAwareOrdinalLoss()(
+            {"logits": logits, "ordinal_logits": ordinal_logits, "score": score},
+            labels,
+            soft_labels=soft_labels,
+            sample_weights=sample_weights,
+        )
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertIsNotNone(logits.grad)
+        self.assertIsNotNone(ordinal_logits.grad)
+        self.assertIsNotNone(score.grad)
+
+    def test_hybrid_outputs_use_ordinal_score_for_prediction(self) -> None:
+        previous_env = {
+            "BERT_INFERENCE_CLASS_WEIGHT": os.environ.get("BERT_INFERENCE_CLASS_WEIGHT"),
+            "BERT_INFERENCE_ORDINAL_WEIGHT": os.environ.get("BERT_INFERENCE_ORDINAL_WEIGHT"),
+            "BERT_INFERENCE_REGRESSION_WEIGHT": os.environ.get("BERT_INFERENCE_REGRESSION_WEIGHT"),
+        }
+        outputs = {
+            "logits": torch.tensor([[0.1, 0.1, 0.1, 5.0, 0.1, 0.1]], dtype=torch.float32),
+            "ordinal_logits": torch.tensor([[5.0, 5.0, 5.0, 5.0, -5.0]], dtype=torch.float32),
+            "score": torch.tensor([4.2], dtype=torch.float32),
+        }
+        try:
+            os.environ["BERT_INFERENCE_CLASS_WEIGHT"] = "0.1"
+            os.environ["BERT_INFERENCE_ORDINAL_WEIGHT"] = "0.6"
+            os.environ["BERT_INFERENCE_REGRESSION_WEIGHT"] = "0.3"
+            pred = predicted_classes_from_outputs(outputs)
+            self.assertEqual(pred.tolist(), [4])
+            prediction = outputs_to_predictions(outputs)[0]
+            self.assertEqual(prediction["score"], 4)
+            self.assertEqual(len(prediction["probabilities"]), NUM_SENTIMENT_CLASSES)
+        finally:
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_hybrid_teacher_num_labels_detects_custom_classifier_head(self) -> None:
+        class DummyTeacher(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.classifier = torch.nn.Linear(4, NUM_SENTIMENT_CLASSES)
+
+        self.assertEqual(_infer_teacher_num_labels(DummyTeacher()), NUM_SENTIMENT_CLASSES)
+
+    def test_bert_pseudo_label_split_loads_soft_training_records(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "pseudo_labels.jsonl"
+            payload = {
+                "id": "row-1",
+                "text": "体验还不错",
+                "score": 4,
+                "confidence": 0.87,
+                "probabilities": [0.01, 0.02, 0.03, 0.07, 0.82, 0.05],
+                "source_dataset": "lansinuote/ChnSentiCorp",
+                "sample_weight": 0.3,
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            split = _load_pseudo_label_split(path)
+            self.assertEqual(len(split), 1)
+            row = split[0]
+            self.assertEqual(row["label"], 4)
+            self.assertEqual(row["label_source"], "pseudo")
+            self.assertEqual(len(row["soft_labels"]), NUM_SENTIMENT_CLASSES)
+            self.assertAlmostEqual(row["sample_weight"], 0.3)
+
+    def test_teacher_stage_rejects_binary_datasets(self) -> None:
+        previous = os.environ.get("BERT_TEACHER_DATASETS")
+        try:
+            os.environ["BERT_TEACHER_DATASETS"] = "lansinuote/ChnSentiCorp"
+            with self.assertRaises(ValueError):
+                _teacher_dataset_names()
+        finally:
+            if previous is None:
+                os.environ.pop("BERT_TEACHER_DATASETS", None)
+            else:
+                os.environ["BERT_TEACHER_DATASETS"] = previous
+
+    def test_real_and_pseudo_splits_have_compatible_bert_training_schema(self) -> None:
+        real = Dataset.from_dict({"text": ["很差"], "label": [1], "_sf_label_source": ["normalized"]})
+        real = _with_training_columns(real, label_source="real", sample_weight=1.0, source_dataset="BerlinWang/DMSC")
+
+        with TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "pseudo_labels.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "id": "row-1",
+                        "text": "一般",
+                        "score": 3,
+                        "confidence": 0.8,
+                        "probabilities": [0.02, 0.03, 0.10, 0.76, 0.07, 0.02],
+                        "source_dataset": "XiangPan/waimai_10k",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            pseudo = _load_pseudo_label_split(path)
+
+            from datasets import concatenate_datasets
+
+            combined = concatenate_datasets([real, pseudo])
+            records = list(BertCsvStreamDataset(combined, chunk_size=2))
+            self.assertEqual(len(records), 2)
+            by_source = {record["label_source"]: record for record in records}
+            self.assertIsNone(by_source["real"]["soft_labels"])
+            self.assertEqual(len(by_source["pseudo"]["soft_labels"]), NUM_SENTIMENT_CLASSES)
 
 
 if __name__ == "__main__":

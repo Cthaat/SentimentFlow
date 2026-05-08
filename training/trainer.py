@@ -18,10 +18,10 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from sentiment_scale import NUM_SENTIMENT_CLASSES
+from ordinal_loss import DistanceAwareOrdinalLoss, OrdinalLossConfig
 
 from .checkpoint import save_checkpoint
 from .config import MAX_LEN, VOCAB_SIZE, get_checkpoint_path, get_epochs, get_runtime_settings
@@ -101,8 +101,17 @@ def _build_loss_fn(class_counts: list[int], settings, device: torch.device):
             "Using weighted loss: "
             + ", ".join(f"score_{idx}_w={weight:.4f}" for idx, weight in enumerate(weights))
         )
-        return nn.CrossEntropyLoss(weight=class_weights)
-    return nn.CrossEntropyLoss()
+        return DistanceAwareOrdinalLoss(class_weights=class_weights, config=_ordinal_loss_config())
+    return DistanceAwareOrdinalLoss(config=_ordinal_loss_config())
+
+
+def _ordinal_loss_config() -> OrdinalLossConfig:
+    return OrdinalLossConfig(
+        ce_weight=float(os.getenv("ORDINAL_CE_WEIGHT", "1.0")),
+        distance_weight=float(os.getenv("ORDINAL_DISTANCE_WEIGHT", "0.35")),
+        label_smoothing=float(os.getenv("ORDINAL_LABEL_SMOOTHING", "0.05")),
+        pseudo_label_smoothing=float(os.getenv("PSEUDO_LABEL_SMOOTHING", "0.02")),
+    )
 
 
 def train_model(cancel_event: threading.Event | None = None):
@@ -202,7 +211,7 @@ def train_model(cancel_event: threading.Event | None = None):
                 optimizer.zero_grad(set_to_none=True)
 
             # 累积损失以计算平均损失值，便于在日志中输出。每个 epoch 结束后，在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
-            total_loss += loss.detach()
+            total_loss += loss.detach() * settings.grad_accum_steps
 
             if step == 1 or step % log_interval == 0:
                 step_loss = (loss.detach() * settings.grad_accum_steps).item()
@@ -242,6 +251,7 @@ def train_model(cancel_event: threading.Event | None = None):
             f"ValQWK: {metrics.quadratic_weighted_kappa:.4f}"
         )
         print(f"ValConfusionMatrix: {metrics.confusion_matrix}")
+        print(f"ValPerClassF1: {[round(value, 4) for value in metrics.per_class_f1]}")
 
         model.train()
 

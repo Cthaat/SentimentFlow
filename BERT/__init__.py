@@ -7,6 +7,7 @@ from .config import (
     EPOCHS,
     MAX_LEN,
 )
+from .export import export_onnx_from_checkpoint
 from .inference import predict_text
 from .model import SentimentBertModel
 from .pipeline import load_checkpoint, load_or_train
@@ -23,4 +24,5 @@ __all__ = [
     "load_checkpoint",
     "load_or_train",
     "predict_text",
+    "export_onnx_from_checkpoint",
 ]

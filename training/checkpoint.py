@@ -33,7 +33,9 @@ def save_checkpoint(
         metric_payload = {
             "best_val_weighted_f1": round(float(metrics.weighted_f1), 6),
             "best_val_mae": round(float(metrics.mae), 6),
+            "best_val_rmse": round(float(metrics.rmse), 6),
             "best_val_qwk": round(float(metrics.quadratic_weighted_kappa), 6),
+            "best_val_spearman": round(float(metrics.spearman), 6),
             "confusion_matrix": metrics.confusion_matrix,
             "support": metrics.support,
         }

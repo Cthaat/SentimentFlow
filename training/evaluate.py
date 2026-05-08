@@ -19,7 +19,9 @@ class EvaluationMetrics:
     macro_f1: float
     weighted_f1: float
     mae: float
+    rmse: float
     quadratic_weighted_kappa: float
+    spearman: float
     confusion_matrix: list[list[int]]
     support: list[int]
     per_class_f1: list[float]
@@ -79,7 +81,9 @@ def evaluate(
         macro_f1=metrics["macro_f1"],
         weighted_f1=metrics["weighted_f1"],
         mae=metrics["mae"],
+        rmse=metrics["rmse"],
         quadratic_weighted_kappa=metrics["quadratic_weighted_kappa"],
+        spearman=metrics["spearman"],
         confusion_matrix=metrics["confusion_matrix"],
         support=metrics["support"],
         per_class_f1=metrics["per_class_f1"],

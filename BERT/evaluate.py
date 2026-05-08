@@ -13,6 +13,7 @@ from sentiment_scale import NUM_SENTIMENT_CLASSES, compute_classification_metric
 from .config import MAX_LEN
 from .config import get_model_name
 from .dataset import CsvStreamDataset
+from .inference import predicted_classes_from_outputs
 from .text_processing import get_tokenizer
 
 
@@ -22,7 +23,9 @@ class EvaluationMetrics:
     macro_f1: float
     weighted_f1: float
     mae: float
+    rmse: float
     quadratic_weighted_kappa: float
+    spearman: float
     confusion_matrix: list[list[int]]
     support: list[int]
     per_class_f1: list[float]
@@ -44,10 +47,12 @@ def bert_collate_fn(batch, max_len: int = MAX_LEN):
         Dict with input_ids, attention_mask, labels as PyTorch tensors
     """
     tokenizer = get_tokenizer(get_model_name())
-    texts, labels = zip(*batch)
+    records = [_normalize_batch_record(item) for item in batch]
+    texts = [record["text"] for record in records]
+    labels = [int(record["label"]) for record in records]
 
     encoded = tokenizer(
-        list(texts),
+        texts,
         padding=True,
         truncation=True,
         max_length=max_len,
@@ -59,6 +64,13 @@ def bert_collate_fn(batch, max_len: int = MAX_LEN):
         "attention_mask": encoded["attention_mask"],
         "labels": torch.tensor(labels, dtype=torch.long),
     }
+
+
+def _normalize_batch_record(item) -> dict:
+    if isinstance(item, dict):
+        return item
+    text, label = item
+    return {"text": str(text), "label": int(label)}
 
 
 @torch.no_grad()
@@ -94,8 +106,8 @@ def evaluate(
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
 
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
-        pred = torch.argmax(logits, dim=1)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        pred = predicted_classes_from_outputs(outputs)
 
         true_labels.extend(labels.detach().cpu().tolist())
         pred_labels.extend(pred.detach().cpu().tolist())
@@ -110,7 +122,9 @@ def evaluate(
         macro_f1=metrics["macro_f1"],
         weighted_f1=metrics["weighted_f1"],
         mae=metrics["mae"],
+        rmse=metrics["rmse"],
         quadratic_weighted_kappa=metrics["quadratic_weighted_kappa"],
+        spearman=metrics["spearman"],
         confusion_matrix=metrics["confusion_matrix"],
         support=metrics["support"],
         per_class_f1=metrics["per_class_f1"],
