@@ -455,28 +455,26 @@ def _apply_bert_dataset_selection(env_updates: dict[str, str]) -> str | None:
         for name in selected
         if name not in BERT_REAL_MULTICLASS_DATASETS and name not in BERT_BINARY_PSEUDO_DATASETS
     ]
+    ignored_for_stage: list[str] = []
 
-    if stage == "teacher":
-        if real_selected and not directly_trainable and not pseudo_selected:
-            env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
-        else:
-            env_updates["BERT_TRAINING_STAGE"] = "legacy"
-            stage = "legacy"
+    if stage == "legacy":
+        pass
+    elif stage == "teacher":
+        env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
+        ignored_for_stage = [*pseudo_selected, *directly_trainable]
     elif stage == "student":
-        if real_selected:
-            env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
-        if pseudo_selected:
-            env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected)
-        if directly_trainable:
-            env_updates["BERT_TRAINING_STAGE"] = "legacy"
-            stage = "legacy"
+        env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
+        env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected)
+        ignored_for_stage = directly_trainable
     elif stage == "auto":
         env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected) if real_selected else ""
         env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected) if pseudo_selected else ""
+        ignored_for_stage = directly_trainable
 
     env_updates["BERT_TRAIN_DATASETS"] = ",".join(selected)
     return (
         "BERT dataset selection: "
         f"stage={stage}, selected={selected}, real={real_selected}, "
-        f"pseudo={pseudo_selected}, direct={directly_trainable}"
+        f"pseudo={pseudo_selected}, direct={directly_trainable}, "
+        f"ignored_for_stage={ignored_for_stage}"
     )

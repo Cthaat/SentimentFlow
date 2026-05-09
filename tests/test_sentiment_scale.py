@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -339,6 +340,51 @@ class TrainingSmokeTest(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_bert_teacher_selected_binary_only_raises_instead_of_endpoint_training(self) -> None:
+        previous = {
+            "BERT_TRAIN_DATASETS": os.environ.get("BERT_TRAIN_DATASETS"),
+            "BERT_SELECTED_DATASETS": os.environ.get("BERT_SELECTED_DATASETS"),
+            "BERT_TEACHER_DATASETS": os.environ.get("BERT_TEACHER_DATASETS"),
+        }
+        try:
+            os.environ["BERT_SELECTED_DATASETS"] = "XiangPan/waimai_10k"
+            os.environ["BERT_TRAIN_DATASETS"] = "XiangPan/waimai_10k"
+            os.environ.pop("BERT_TEACHER_DATASETS", None)
+
+            with self.assertRaises(ValueError):
+                _teacher_dataset_names()
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_backend_bert_dataset_selection_does_not_fallback_to_legacy(self) -> None:
+        backend_dir = Path(__file__).resolve().parents[1] / "backend"
+        if str(backend_dir) not in sys.path:
+            sys.path.insert(0, str(backend_dir))
+
+        from app.services.training_service import _apply_bert_dataset_selection
+
+        teacher_env = {
+            "BERT_TRAINING_STAGE": "teacher",
+            "BERT_TRAIN_DATASETS": "XiangPan/waimai_10k,ttxy/online_shopping_10_cats",
+        }
+        teacher_message = _apply_bert_dataset_selection(teacher_env)
+        self.assertEqual(teacher_env["BERT_TRAINING_STAGE"], "teacher")
+        self.assertEqual(teacher_env["BERT_TEACHER_DATASETS"], "")
+        self.assertIn("ignored_for_stage", teacher_message or "")
+
+        student_env = {
+            "BERT_TRAINING_STAGE": "student",
+            "BERT_TRAIN_DATASETS": "BerlinWang/DMSC,XiangPan/waimai_10k",
+        }
+        _apply_bert_dataset_selection(student_env)
+        self.assertEqual(student_env["BERT_TRAINING_STAGE"], "student")
+        self.assertEqual(student_env["BERT_TEACHER_DATASETS"], "BerlinWang/DMSC")
+        self.assertEqual(student_env["BERT_BINARY_PSEUDO_DATASETS"], "XiangPan/waimai_10k")
 
     def test_real_and_pseudo_splits_have_compatible_bert_training_schema(self) -> None:
         real = Dataset.from_dict({"text": ["很差"], "label": [1], "_sf_label_source": ["normalized"]})

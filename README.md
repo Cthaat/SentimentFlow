@@ -465,8 +465,12 @@ python -m BERT.export models/bert_student exports/bert_student.onnx --max-len 12
 **使用别名**（`DATASET_ALIASES`）时，可以用简写名：
 
 ```bash
-BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
+BERT_TRAINING_STAGE=teacher BERT_TEACHER_DATASETS="dmsc,jd_reviews" python BERT.py
+BERT_TRAINING_STAGE=student BERT_TEACHER_CHECKPOINT_PATH="./models/bert_teacher" BERT_BINARY_PSEUDO_DATASETS="weibo_senti" python BERT.py
 ```
+
+注意：BERT 的 `teacher` / `student` 阶段不会把二分类数据集自动降级为 `legacy` 直接训练。二分类数据必须在 `student`
+阶段通过 Teacher 生成 soft pseudo labels，否则会被过滤或直接报错，避免模型重新退化成只预测 0/5 的伪六分类。
 
 ---
 
@@ -543,7 +547,8 @@ BERT_TRAIN_DATASETS="dmsc,jd_reviews,weibo_senti" python BERT.py
 |------|--------|------|
 | `BERT_TEACHER_DATASETS` | `BerlinWang/DMSC,dirtycomputer/JD_review` | Teacher/Student 真实多分类数据白名单；传入其他数据会报错 |
 | `BERT_BINARY_PSEUDO_DATASETS` | 五个二分类数据集 | Student 阶段用于生成伪标签的二分类数据白名单 |
-| `BERT_TRAIN_DATASETS` | 多数据集列表 | 仅 `BERT_TRAINING_STAGE=legacy` 使用 |
+| `BERT_SELECTED_DATASETS` | 空 | 前端选择的数据集镜像；teacher/student 会按阶段过滤，不会自动 fallback 到 legacy |
+| `BERT_TRAIN_DATASETS` | 多数据集列表 | `legacy` 直训使用；前端也会用它传选择列表，但 BERT teacher/student 会再按白名单过滤 |
 | `TRAIN_VAL_RATIO` | `0.1` | 无 validation split 时自动切分比例 |
 | `TRAIN_MAX_SAMPLES` | `0`（不限） | 训练集最大样本数 |
 | `TRAIN_MAX_VAL_SAMPLES` | `0`（不限） | 验证集最大样本数 |

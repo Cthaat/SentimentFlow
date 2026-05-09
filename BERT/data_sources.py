@@ -510,13 +510,14 @@ def _teacher_dataset_names() -> list[str]:
             if ignored:
                 print(
                     "Teacher stage ignores non-real-multiclass selected datasets: "
-                    f"{ignored}. Use BERT_TRAINING_STAGE=legacy to train directly on them."
+                    f"{ignored}. Select DMSC/JD_review for teacher training, or use "
+                    "student stage with a teacher checkpoint to pseudo-label binary datasets."
                 )
             if not requested:
                 raise ValueError(
                     "No teacher-compatible datasets selected. "
                     f"Teacher stage only supports {REAL_MULTICLASS_DATASETS}; "
-                    "switch BERT_TRAINING_STAGE to legacy or select DMSC/JD_review."
+                    "select DMSC/JD_review before training a teacher model."
                 )
         else:
             requested = list(REAL_MULTICLASS_DATASETS)
@@ -545,13 +546,14 @@ def _binary_pseudo_dataset_names() -> list[str]:
             if ignored:
                 print(
                     "Student pseudo-label stage ignores non-binary selected datasets: "
-                    f"{ignored}. Use BERT_TRAINING_STAGE=legacy to train directly on them."
+                    f"{ignored}. Student pseudo labels are generated only from configured "
+                    "binary source datasets."
                 )
             if not requested:
                 raise ValueError(
                     "No binary pseudo-label datasets selected. "
                     f"Student pseudo-label stage supports {BINARY_PSEUDO_DATASETS}; "
-                    "switch BERT_TRAINING_STAGE to legacy or select binary source datasets."
+                    "select at least one binary source dataset for pseudo labeling."
                 )
         else:
             requested = list(BINARY_PSEUDO_DATASETS)

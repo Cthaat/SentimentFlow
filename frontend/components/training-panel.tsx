@@ -678,39 +678,21 @@ function applyBertDatasetSelection(config: Record<string, string>, selectedDatas
   const stage = (config.BERT_TRAINING_STAGE || "auto").trim().toLowerCase();
   const realSelected = selected.filter((name) => BERT_REAL_MULTICLASS_DATASETS.has(name));
   const pseudoSelected = selected.filter((name) => BERT_BINARY_PSEUDO_DATASETS.has(name));
-  const directSelected = selected.filter(
-    (name) => !BERT_REAL_MULTICLASS_DATASETS.has(name) && !BERT_BINARY_PSEUDO_DATASETS.has(name)
-  );
 
   if (stage === "teacher") {
-    if (realSelected.length > 0 && pseudoSelected.length === 0 && directSelected.length === 0) {
-      config.BERT_TEACHER_DATASETS = realSelected.join(",");
-    } else {
-      config.BERT_TRAINING_STAGE = "legacy";
-    }
+    config.BERT_TEACHER_DATASETS = realSelected.join(",");
     return;
   }
 
   if (stage === "student") {
-    if (realSelected.length > 0) {
-      config.BERT_TEACHER_DATASETS = realSelected.join(",");
-    }
-    if (pseudoSelected.length > 0) {
-      config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
-    }
-    if (directSelected.length > 0) {
-      config.BERT_TRAINING_STAGE = "legacy";
-    }
+    config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
     return;
   }
 
   if (stage === "auto") {
-    if (realSelected.length > 0) {
-      config.BERT_TEACHER_DATASETS = realSelected.join(",");
-    }
-    if (pseudoSelected.length > 0) {
-      config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
-    }
+    config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
   }
 }
 
