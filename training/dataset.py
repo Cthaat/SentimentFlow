@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -17,18 +18,29 @@ import pandas as pd
 import torch
 from torch.utils.data import IterableDataset
 
+from sentiment_scale import LEGACY_BINARY_TO_SCORE, validate_sentiment_score
+
 from .text_processing import encode_text
 
 
 class CsvStreamDataset(IterableDataset):
     """把文本样本流式编码成模型可消费的张量。
     
-    支持标签映射，用于兼容多类数据集。例如：
-    - ttxy/online_shopping_10_cats (10类) -> 二分类
+    支持标签映射，用于兼容历史或第三方数据集。例如：
+    - 旧二分类 0/1 -> 0/5
+    - 评分数据 -> 0-5 情感分
     - 通过 label_map 参数指定映射规则
     """
 
-    def __init__(self, source, chunk_size: int, max_len: int, vocab_size: int, label_map: dict | None = None):
+    def __init__(
+        self,
+        source,
+        chunk_size: int,
+        max_len: int,
+        vocab_size: int,
+        label_map: dict | None = None,
+        labels_are_normalized: bool = False,
+    ):
         super().__init__()
         # 数据来源 可以是 CSV 文件路径，也可以是内存中的列表/数组（如 HuggingFace Dataset）。Dataset 需要支持按索引访问和长度查询。
         self.source = source
@@ -38,8 +50,10 @@ class CsvStreamDataset(IterableDataset):
         self.max_len = max_len
         # 词汇表大小（哈希映射的模数）
         self.vocab_size = vocab_size
-        # 标签映射规则 {original_label: binary_label}，binary_label 应为 0 或 1；如果 original_label 不在映射中，则保持原值不变；如果 binary_label 是 -1，则表示跳过该样本（常用于过滤掉某些类别）。
-        self.label_map = label_map or {}  # {original_label: binary_label}
+        # 标签映射规则 {original_label: score}，score 应为 0-5；-1 表示跳过该样本。
+        self.label_map = label_map or {}
+        self.labels_are_normalized = labels_are_normalized
+        self._csv_legacy_binary_cache: dict[str, bool] = {}
 
     @staticmethod
     def _parse_label(value):
@@ -114,6 +128,52 @@ class CsvStreamDataset(IterableDataset):
         if buffer_texts:
             yield pd.DataFrame({"text": buffer_texts, "label": buffer_labels})
 
+    def _detect_csv_legacy_binary(self, csv_path: Path) -> bool:
+        """整份 CSV 级别判断是否为旧 0/1 标签，避免按 chunk 误判。"""
+        if self.labels_are_normalized or self.label_map:
+            return False
+
+        override = os.getenv("MIGRATE_LEGACY_BINARY_LABELS", "auto").strip().lower()
+        if override in {"1", "true", "yes"}:
+            return True
+        if override in {"0", "false", "no"}:
+            return False
+
+        cache_key = str(csv_path.resolve())
+        if cache_key in self._csv_legacy_binary_cache:
+            return self._csv_legacy_binary_cache[cache_key]
+
+        values: set[int] = set()
+        chunk_reader = None
+        try:
+            chunk_reader = pd.read_csv(
+                csv_path,
+                usecols=["label"],
+                dtype={"label": "int16"},
+                chunksize=self.chunk_size,
+            )
+            for chunk in chunk_reader:
+                for raw_label in chunk["label"].dropna().tolist():
+                    label = int(raw_label)
+                    values.add(label)
+                    if label not in LEGACY_BINARY_TO_SCORE:
+                        self._csv_legacy_binary_cache[cache_key] = False
+                        return False
+        except Exception:
+            values.clear()
+            for _, label in self._iter_fallback_csv_rows(csv_path):
+                values.add(int(label))
+                if int(label) not in LEGACY_BINARY_TO_SCORE:
+                    self._csv_legacy_binary_cache[cache_key] = False
+                    return False
+        finally:
+            if chunk_reader is not None:
+                chunk_reader.close()
+
+        result = bool(values) and values.issubset(set(LEGACY_BINARY_TO_SCORE))
+        self._csv_legacy_binary_cache[cache_key] = result
+        return result
+
     def __iter__(self):
         # 多进程环境下每个 worker 处理不同的 chunk，避免重复读取和竞争。
         # 用于 DataLoader 多进程
@@ -128,6 +188,7 @@ class CsvStreamDataset(IterableDataset):
         # CSV文件路径：按 chunk 流式读取，节省内存；内存数据集：按索引遍历。
         if isinstance(self.source, (str, Path)):
             csv_path = Path(self.source)
+            legacy_binary_source = self._detect_csv_legacy_binary(csv_path)
             # 分块读取 CSV，确保每个 worker 处理不同的 chunk，避免重复读取和竞争。
             for chunk_index, chunk in enumerate(self._iter_csv_chunks(csv_path)):
                 if chunk_index % num_workers != worker_id:
@@ -145,9 +206,11 @@ class CsvStreamDataset(IterableDataset):
                     # 应用标签映射（如果存在）
                     # 只映射在 label_map 中的标签，其他标签保持原值
                     # 如果映射后的标签是 -1，表示跳过该样本（常用于过滤掉某些类别）。
-                    # 验证映射后的标签在有效范围内（二分类：0 或 1），否则抛出异常。
+                    # 验证映射后的标签在有效范围内（0-5），否则抛出异常。
                     if self.label_map and label in self.label_map:
                         mapped_label = self.label_map[label]
+                    elif legacy_binary_source and int(label) in LEGACY_BINARY_TO_SCORE:
+                        mapped_label = LEGACY_BINARY_TO_SCORE[int(label)]
                     else:
                         mapped_label = label
 
@@ -155,12 +218,7 @@ class CsvStreamDataset(IterableDataset):
                     if mapped_label == -1:
                         continue
                     
-                    # 验证映射后的标签在有效范围内（二分类：0 或 1）
-                    if mapped_label < 0 or mapped_label > 1:
-                        raise ValueError(   
-                            f"Invalid mapped label value: {mapped_label} (original: {label}). "
-                            f"Expected binary labels [0, 1]."
-                        )
+                    mapped_label = validate_sentiment_score(mapped_label)
                         
                     # return 一条数据（但不会结束函数） yield 关键字使函数成为生成器，每次迭代返回一个样本，保持内存效率。
                     yield (
@@ -172,7 +230,7 @@ class CsvStreamDataset(IterableDataset):
                             encode_text(text, max_len=self.max_len, vocab_size=self.vocab_size),
                             dtype=torch.long,
                         ),
-                        # 标签映射成二分类标签（0 或 1），并转换为 tensor 格式。
+                        # 标签映射成 0-5 情感分，并转换为 tensor 格式。
                         torch.tensor(mapped_label, dtype=torch.long),
                     )
             return
@@ -200,12 +258,7 @@ class CsvStreamDataset(IterableDataset):
                 if mapped_label == -1:
                     continue
                 
-                # 验证映射后的标签在有效范围内（二分类：0 或 1）
-                if mapped_label < 0 or mapped_label > 1:
-                    raise ValueError(
-                        f"Invalid mapped label value: {mapped_label} (original: {label}, index: {idx}). "
-                        f"Expected binary labels [0, 1]."
-                    )
+                mapped_label = validate_sentiment_score(mapped_label)
                 
                 yield (
                     torch.tensor(

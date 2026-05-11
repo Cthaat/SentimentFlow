@@ -5,21 +5,50 @@ from pathlib import Path
 
 from app.core.paths import get_backend_dir, get_models_dir, normalize_lstm_model_dir
 
-# 在导入 transformers 之前抑制 HF Hub 后台线程请求，避免 403 报错
-os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
-
-_ENV_LOADED = False
-
 
 def _candidate_env_paths() -> list[Path]:
 	return [
 		get_backend_dir().parent / ".env",
 		get_backend_dir() / ".env",
 	]
+
+
+def _load_env_path(env_path: Path, *, override: bool) -> None:
+	if not env_path.exists():
+		return
+	with env_path.open("r", encoding="utf-8") as f:
+		for raw_line in f:
+			line = raw_line.strip()
+			if not line or line.startswith("#") or "=" not in line:
+				continue
+
+			key, value = line.split("=", 1)
+			key = key.strip()
+			value = value.strip().strip('"').strip("'")
+			if not key:
+				continue
+
+			if override or key not in os.environ:
+				os.environ[key] = value
+
+
+def _configure_huggingface_env() -> None:
+	for env_path in _candidate_env_paths():
+		_load_env_path(env_path, override=False)
+	if os.getenv("HF_TOKEN") and "HF_HUB_DISABLE_IMPLICIT_TOKEN" not in os.environ:
+		os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+	else:
+		os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "0")
+	os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+	os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+	os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+	os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
+
+
+# 在导入 transformers 之前读取 .env 并配置 HF Hub。
+_configure_huggingface_env()
+
+_ENV_LOADED = False
 
 
 def load_backend_env(override: bool = False) -> Path:
@@ -35,20 +64,7 @@ def load_backend_env(override: bool = False) -> Path:
 		_ENV_LOADED = True
 		return env_path
 
-	with env_path.open("r", encoding="utf-8") as f:
-		for raw_line in f:
-			line = raw_line.strip()
-			if not line or line.startswith("#") or "=" not in line:
-				continue
-
-			key, value = line.split("=", 1)
-			key = key.strip()
-			value = value.strip().strip('"').strip("'")
-			if not key:
-				continue
-
-			if override or key not in os.environ:
-				os.environ[key] = value
+	_load_env_path(env_path, override=override)
 
 	_ENV_LOADED = True
 	return env_path

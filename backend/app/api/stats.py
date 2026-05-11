@@ -4,4 +4,8 @@ router = APIRouter()
 
 @router.get("/overview")
 def overview():
-    return {"total_predictions": 0, "positive_ratio": 0.0, "negative_ratio": 0.0}
+    return {
+        "total_predictions": 0,
+        "score_distribution": {str(score): 0 for score in range(6)},
+        "average_score": None,
+    }

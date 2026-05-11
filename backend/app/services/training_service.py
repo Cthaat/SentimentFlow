@@ -28,6 +28,19 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 
+BERT_REAL_MULTICLASS_DATASETS = {
+    "BerlinWang/DMSC",
+    "dirtycomputer/JD_review",
+}
+BERT_BINARY_PSEUDO_DATASETS = {
+    "lansinuote/ChnSentiCorp",
+    "XiangPan/waimai_10k",
+    "dirtycomputer/weibo_senti_100k",
+    "ndiy/NLPCC14-SC",
+    "dirtycomputer/ChnSentiCorp_htl_all",
+}
+
+
 @dataclass
 class TrainingProgress:
     stage: str = "queued"
@@ -39,7 +52,13 @@ class TrainingProgress:
     loss: float | None = None
     val_acc: float | None = None
     val_f1: float | None = None
+    val_weighted_f1: float | None = None
+    val_mae: float | None = None
+    val_rmse: float | None = None
+    val_qwk: float | None = None
+    val_spearman: float | None = None
     best_f1: float | None = None
+    best_metric: float | None = None
 
 
 @dataclass
@@ -72,7 +91,13 @@ class TrainingJob:
                 "loss": self.progress.loss,
                 "val_acc": self.progress.val_acc,
                 "val_f1": self.progress.val_f1,
+                "val_weighted_f1": self.progress.val_weighted_f1,
+                "val_mae": self.progress.val_mae,
+                "val_rmse": self.progress.val_rmse,
+                "val_qwk": self.progress.val_qwk,
+                "val_spearman": self.progress.val_spearman,
                 "best_f1": self.progress.best_f1,
+                "best_metric": self.progress.best_metric,
             },
             "logs": self.logs[-50:],
             "started_at": self.started_at,
@@ -84,12 +109,20 @@ class TrainingJob:
 
 
 _EPOCH_PATTERN = re.compile(
-    r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([\d.]+)[,.]?\s*ValAcc:\s*([\d.]+)[,.]?\s*ValMacroF1:\s*([\d.]+)"
+    r"Epoch\s+(\d+)[,.]?\s*Loss:\s*([-\d.]+)[,.]?\s*ValAcc:\s*([-\d.]+)[,.]?\s*"
+    r"ValMacroF1:\s*([-\d.]+)(?:[,.]?\s*ValWeightedF1:\s*([-\d.]+)[,.]?\s*"
+    r"ValMAE:\s*([-\d.]+)(?:[,.]?\s*ValRMSE:\s*([-\d.]+))?[,.]?\s*"
+    r"ValQWK:\s*([-\d.]+)(?:[,.]?\s*ValSpearman:\s*([-\d.]+))?)?"
 )
 _STEP_PATTERN = re.compile(
     r"Epoch\s+(\d+)/(\d+),\s*Step\s+(\d+)/(\d+),\s*Loss:\s*([\d.]+)"
 )
-_BEST_MODEL_PATTERN = re.compile(r"Best model updated at epoch \d+, ValMacroF1=([\d.]+)")
+_BEST_MODEL_PATTERN = re.compile(
+    r"Best model updated at epoch \d+,"
+    r"(?:\s*SelectionMetric=([-\d.]+),)?"
+    r".*?ValMacroF1=([-\d.]+)"
+    r"(?:.*?ValQWK=([-\d.]+))?"
+)
 
 
 class TrainingManager:
@@ -166,6 +199,10 @@ class TrainingManager:
 
         # 将用户配置写入环境变量（仅影响当前线程的子进程）
         env_updates = {key: str(value) for key, value in job.config.items()}
+        if job.model_type == "bert":
+            selection_log = _apply_bert_dataset_selection(env_updates)
+            if selection_log:
+                job.logs.append(f"[INFO] {selection_log}")
 
         # 创建带时间戳的模型保存路径，统一放到 models/ 目录下
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -323,6 +360,18 @@ class _StreamCapture:
         elif line.startswith("DATA SUMMARY"):
             self.job.progress.stage = "data_ready"
             self.job.progress.stage_detail = "训练数据已加载，正在统计样本分布"
+        elif line.startswith("BERT training stage=teacher"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = "Teacher 阶段仅使用真实多分类数据"
+        elif line.startswith("Pseudo-label cache ready"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = line
+        elif line.startswith("Pseudo-label split ready"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = line
+        elif line.startswith("BERT training stage=student"):
+            self.job.progress.stage = "data_ready"
+            self.job.progress.stage_detail = "Student 阶段正在使用真实标签和高置信伪标签"
         elif line.startswith("Training config:"):
             self.job.progress.stage = "training"
             self.job.progress.stage_detail = line
@@ -348,10 +397,22 @@ class _StreamCapture:
             self.job.progress.loss = float(m.group(2))
             self.job.progress.val_acc = float(m.group(3))
             self.job.progress.val_f1 = float(m.group(4))
+            if m.group(5) is not None:
+                self.job.progress.val_weighted_f1 = float(m.group(5))
+                self.job.progress.val_mae = float(m.group(6))
+                if m.group(7) is not None:
+                    self.job.progress.val_rmse = float(m.group(7))
+                self.job.progress.val_qwk = float(m.group(8))
+                if m.group(9) is not None:
+                    self.job.progress.val_spearman = float(m.group(9))
 
         m2 = _BEST_MODEL_PATTERN.search(line)
         if m2:
-            self.job.progress.best_f1 = float(m2.group(1))
+            if m2.group(1) is not None:
+                self.job.progress.best_metric = float(m2.group(1))
+            self.job.progress.best_f1 = float(m2.group(2))
+            if m2.group(3) is not None:
+                self.job.progress.val_qwk = float(m2.group(3))
 
     def flush(self) -> None:
         self._original_stdout.flush()
@@ -371,3 +432,49 @@ def _temporary_env(updates: dict[str, str]):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old_value
+
+
+def _split_dataset_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _apply_bert_dataset_selection(env_updates: dict[str, str]) -> str | None:
+    """Map frontend-selected BERT datasets to the env vars each training stage reads."""
+    selected = _split_dataset_list(env_updates.get("BERT_TRAIN_DATASETS"))
+    if not selected:
+        return None
+
+    env_updates["BERT_SELECTED_DATASETS"] = ",".join(selected)
+    stage = env_updates.get("BERT_TRAINING_STAGE", os.getenv("BERT_TRAINING_STAGE", "auto")).strip().lower()
+    real_selected = [name for name in selected if name in BERT_REAL_MULTICLASS_DATASETS]
+    pseudo_selected = [name for name in selected if name in BERT_BINARY_PSEUDO_DATASETS]
+    directly_trainable = [
+        name
+        for name in selected
+        if name not in BERT_REAL_MULTICLASS_DATASETS and name not in BERT_BINARY_PSEUDO_DATASETS
+    ]
+    ignored_for_stage: list[str] = []
+
+    if stage == "legacy":
+        pass
+    elif stage == "teacher":
+        env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
+        ignored_for_stage = [*pseudo_selected, *directly_trainable]
+    elif stage == "student":
+        env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected)
+        env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected)
+        ignored_for_stage = directly_trainable
+    elif stage == "auto":
+        env_updates["BERT_TEACHER_DATASETS"] = ",".join(real_selected) if real_selected else ""
+        env_updates["BERT_BINARY_PSEUDO_DATASETS"] = ",".join(pseudo_selected) if pseudo_selected else ""
+        ignored_for_stage = directly_trainable
+
+    env_updates["BERT_TRAIN_DATASETS"] = ",".join(selected)
+    return (
+        "BERT dataset selection: "
+        f"stage={stage}, selected={selected}, real={real_selected}, "
+        f"pseudo={pseudo_selected}, direct={directly_trainable}, "
+        f"ignored_for_stage={ignored_for_stage}"
+    )

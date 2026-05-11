@@ -1,4 +1,5 @@
 import os
+import sys
 import zlib
 from pathlib import Path
 
@@ -6,6 +7,18 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
+
+PROJECT_ROOT = Path(__file__).resolve().parents[4]  # SentimentFlow
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from ordinal_loss import DistanceAwareOrdinalLoss, OrdinalLossConfig
+from sentiment_scale import (
+    LEGACY_BINARY_TO_SCORE,
+    NUM_SENTIMENT_CLASSES,
+    coerce_sentiment_score,
+    probabilities_to_prediction,
+)
 
 
 # 序列长度、训练轮数和词表大小都是训练时最核心的三个超参数。
@@ -17,7 +30,6 @@ DEFAULT_CHUNK_SIZE = 4096
 # 固定为项目/脚本级绝对路径，避免受启动目录影响。
 # 迁移到 app/models/LSTM 后，显式把模型目录和项目根目录分开计算。
 MODEL_ROOT_DIR = Path(__file__).resolve().parents[1]  # backend/app/models
-PROJECT_ROOT = Path(__file__).resolve().parents[4]  # SentimentFlow
 DATA_CSV_PATH = Path(os.getenv("TRAIN_DATA_PATH", str(PROJECT_ROOT / "data.csv"))).resolve()
 CHECKPOINT_PATH = Path(
     os.getenv("TRAIN_CHECKPOINT_PATH", str(MODEL_ROOT_DIR / "sentiment_model.pt"))
@@ -27,7 +39,7 @@ CHECKPOINT_PATH = Path(
 # 这份脚本的目标很简单：
 # 1. 从 CSV 里流式读取文本和标签
 # 2. 把文本变成数字序列
-# 3. 用 LSTM 做二分类训练
+# 3. 用 LSTM 做 0-5 情感评分分类训练
 # 4. 训练完后直接拿几个样例做预测
 #
 # 之所以不用一次性把全部数据读进内存，是因为你的数据量很大，
@@ -46,7 +58,7 @@ def encode_text(text, maxlen=MAX_LEN, vocab_size=VOCAB_SIZE):
     # 1. 不需要预先扫描全量数据
     # 2. 内存更省
     # 3. 训练开始更快
-    # 代价是会有少量哈希冲突，但对这种简单二分类任务通常可以接受。
+    # 代价是会有少量哈希冲突，但对这种轻量评分任务通常可以接受。
     ids = [zlib.crc32(token.encode("utf-8")) % (vocab_size - 1) + 1 for token in tokenize(text)]
 
     # 所有样本都要变成同样长度，方便批量送进 LSTM。
@@ -58,12 +70,12 @@ def encode_text(text, maxlen=MAX_LEN, vocab_size=VOCAB_SIZE):
 
 class Model(nn.Module):
     # Embedding + LSTM + Linear 是一个很标准的文本分类结构。
-    # Embedding 把离散 id 变成向量，LSTM 学习顺序关系，Linear 输出二分类结果。
+    # Embedding 把离散 id 变成向量，LSTM 学习顺序关系，Linear 输出 6 档情感评分。
     def __init__(self, vocab_size):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, 128)
         self.lstm = nn.LSTM(128, 256, num_layers=2, dropout=0.5, batch_first=True)
-        self.fc = nn.Linear(256, 2)
+        self.fc = nn.Linear(256, NUM_SENTIMENT_CLASSES)
 
     def forward(self, x):
         # 输入 x 的形状通常是 [batch_size, seq_len]。
@@ -84,6 +96,46 @@ class CsvStreamDataset(IterableDataset):
         super().__init__()
         self.csv_path = csv_path
         self.chunk_size = chunk_size
+        self._legacy_binary_labels: bool | None = None
+
+    def _detect_legacy_binary_labels(self) -> bool:
+        """整份 CSV 级别判断是否为旧 0/1 标签。"""
+        if self._legacy_binary_labels is not None:
+            return self._legacy_binary_labels
+
+        override = os.getenv("MIGRATE_LEGACY_BINARY_LABELS", "auto").strip().lower()
+        if override in {"1", "true", "yes"}:
+            self._legacy_binary_labels = True
+            return True
+        if override in {"0", "false", "no"}:
+            self._legacy_binary_labels = False
+            return False
+
+        values: set[int] = set()
+        chunk_reader = None
+        try:
+            chunk_reader = pd.read_csv(
+                self.csv_path,
+                usecols=["label"],
+                dtype={"label": "int16"},
+                chunksize=self.chunk_size,
+            )
+            for chunk in chunk_reader:
+                for raw_label in chunk["label"].dropna().tolist():
+                    label = int(raw_label)
+                    values.add(label)
+                    if label not in LEGACY_BINARY_TO_SCORE:
+                        self._legacy_binary_labels = False
+                        return False
+        except Exception:
+            self._legacy_binary_labels = False
+            return False
+        finally:
+            if chunk_reader is not None:
+                chunk_reader.close()
+
+        self._legacy_binary_labels = bool(values) and values.issubset(set(LEGACY_BINARY_TO_SCORE))
+        return self._legacy_binary_labels
 
     def __iter__(self):
         # 迭代器真正开始工作时，才从磁盘按 chunk 读取 CSV。
@@ -92,6 +144,7 @@ class CsvStreamDataset(IterableDataset):
         worker_id = 0 if worker_info is None else worker_info.id
         num_workers = 1 if worker_info is None else worker_info.num_workers
 
+        legacy_binary_labels = self._detect_legacy_binary_labels()
         chunk_reader = pd.read_csv(
             self.csv_path,
             usecols=["text", "label"],
@@ -113,7 +166,10 @@ class CsvStreamDataset(IterableDataset):
 
             for text, label in zip(texts, labels):
                 # 每次 yield 一条样本，DataLoader 会自动把多条样本拼成 batch。
-                yield torch.tensor(encode_text(text), dtype=torch.long), torch.tensor(label, dtype=torch.long)
+                score = coerce_sentiment_score(label, legacy_binary=legacy_binary_labels)
+                if score == -1:
+                    continue
+                yield torch.tensor(encode_text(text), dtype=torch.long), torch.tensor(score, dtype=torch.long)
 
 
 def train():
@@ -165,8 +221,14 @@ def train():
     # 这让训练启动更快，也更省内存。
     model = Model(VOCAB_SIZE).to(device)
 
-    # 交叉熵损失用于二分类，是分类任务最常见的损失函数之一。
-    loss_fn = nn.CrossEntropyLoss()
+    # 序数距离感知损失：保留 6 类 logits，同时让相邻评分错误比跨极性错误惩罚更低。
+    loss_fn = DistanceAwareOrdinalLoss(
+        config=OrdinalLossConfig(
+            ce_weight=float(os.getenv("ORDINAL_CE_WEIGHT", "1.0")),
+            distance_weight=float(os.getenv("ORDINAL_DISTANCE_WEIGHT", "0.35")),
+            label_smoothing=float(os.getenv("ORDINAL_LABEL_SMOOTHING", "0.05")),
+        )
+    )
 
     # AdamW 是比较稳的优化器，通常比普通 SGD 更容易收敛。
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -212,8 +274,7 @@ def train():
                     optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
-            # 记录损失时用的是缩放后的 loss，主要用于观察趋势，不必特别精确。
-            total_loss += loss.detach()
+            total_loss += loss.detach() * grad_accum_steps
 
         # 如果最后几个 batch 没有凑满累积步数，也要补一次参数更新。
         if batch_count > 0 and step % grad_accum_steps != 0:
@@ -233,6 +294,7 @@ def train():
             "model_state_dict": model.state_dict(),
             "max_len": MAX_LEN,
             "vocab_size": VOCAB_SIZE,
+            "num_classes": NUM_SENTIMENT_CLASSES,
         },
         CHECKPOINT_PATH,
     )
@@ -284,9 +346,9 @@ def predict(text, model, device):
     with torch.inference_mode():
         output = model(ids)
 
-    # 输出两个类别里概率更高的那个。
-    pred = torch.argmax(output, dim=1).item()
-    return "正面" if pred == 1 else "负面"
+    probs = torch.softmax(output, dim=1)[0]
+    result = probabilities_to_prediction(probs.detach().cpu().tolist())
+    return f"{result['score']} {result['label_zh']}"
 
 
 if __name__ == "__main__":

@@ -22,7 +22,13 @@ interface JobStatus {
     loss: number | null;
     val_acc: number | null;
     val_f1: number | null;
+    val_weighted_f1?: number | null;
+    val_mae?: number | null;
+    val_rmse?: number | null;
+    val_qwk?: number | null;
+    val_spearman?: number | null;
     best_f1: number | null;
+    best_metric?: number | null;
   };
   logs: string[];
   started_at: string | null;
@@ -30,6 +36,14 @@ interface JobStatus {
   config: Record<string, unknown>;
   error: string | null;
   model_path?: string | null;
+}
+
+interface TrainingJobItem {
+  job_id: string;
+  model_type: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 const DATASET_OPTIONS = [
@@ -40,7 +54,21 @@ const DATASET_OPTIONS = [
   { value: "ndiy/NLPCC14-SC", label: "NLPCC14-SC" },
   { value: "dirtycomputer/ChnSentiCorp_htl_all", label: "ChnSentiCorp Hotel" },
   { value: "BerlinWang/DMSC", label: "DMSC" },
+  { value: "ttxy/online_shopping_10_cats", label: "Online Shopping 10 Cats" },
 ];
+
+const BERT_REAL_MULTICLASS_DATASETS = new Set([
+  "BerlinWang/DMSC",
+  "dirtycomputer/JD_review",
+]);
+
+const BERT_BINARY_PSEUDO_DATASETS = new Set([
+  "lansinuote/ChnSentiCorp",
+  "XiangPan/waimai_10k",
+  "dirtycomputer/weibo_senti_100k",
+  "ndiy/NLPCC14-SC",
+  "dirtycomputer/ChnSentiCorp_htl_all",
+]);
 
 const LSTM_DEFAULTS: Record<string, string> = {
   EPOCHS: "25",
@@ -52,17 +80,43 @@ const LSTM_DEFAULTS: Record<string, string> = {
 };
 
 const BERT_DEFAULTS: Record<string, string> = {
+  BERT_TRAINING_STAGE: "teacher",
   BERT_EPOCHS: "5",
   BERT_TRAIN_BATCH_SIZE: "32",
   BERT_TRAIN_LR: "0.00002",
+  BERT_WEIGHT_DECAY: "0.01",
+  BERT_LAYERWISE_LR_DECAY: "0.9",
+  BERT_HEAD_LR_MULTIPLIER: "2.0",
+  BERT_SCHEDULER: "cosine",
+  BERT_WARMUP_RATIO: "0.06",
   BERT_EARLY_STOP_PATIENCE: "2",
   BERT_EARLY_STOP_MIN_DELTA: "0.0005",
+  BERT_SELECTION_METRIC: "qwk",
   BERT_TRAIN_WEIGHTED_LOSS: "1",
+  BERT_TEACHER_CHECKPOINT_PATH: "",
+  PSEUDO_LABEL_PATH: "pseudo_labels.jsonl",
+  PSEUDO_LABEL_MIN_CONFIDENCE: "0.75",
+  PSEUDO_LABEL_TEMPERATURE: "1.5",
+  PSEUDO_LABEL_WEIGHT: "0.3",
+  ORDINAL_DISTANCE_WEIGHT: "0.35",
+  ORDINAL_LABEL_SMOOTHING: "0.05",
+  PSEUDO_LABEL_SMOOTHING: "0.02",
+  FOCAL_GAMMA: "1.5",
+  LOGIT_ADJUSTMENT_WEIGHT: "0.3",
+  CLASS_BALANCED_BETA: "0.9999",
+  BERT_INTERPOLATE_MISSING_LABELS: "1",
+  BERT_DISTRIBUTION_AWARE_OVERSAMPLING: "1",
+  BERT_PSEUDO_CURRICULUM_EPOCHS: "2",
+  BERT_PSEUDO_CURRICULUM_START_SCALE: "0.3",
+  BERT_GRADIENT_CHECKPOINTING: "1",
+  BERT_MIXED_PRECISION: "fp16",
 };
 
+const ACTIVE_TRAINING_JOB_STORAGE_KEY = "sentimentflow.activeTrainingJobId";
+
 export function TrainingPanel() {
-  const [modelType, setModelType] = useState<"lstm" | "bert">("lstm");
-  const [params, setParams] = useState<Record<string, string>>({ ...LSTM_DEFAULTS });
+  const [modelType, setModelType] = useState<"lstm" | "bert">("bert");
+  const [params, setParams] = useState<Record<string, string>>({ ...BERT_DEFAULTS });
   const [selectedDatasets, setSelectedDatasets] = useState<string[]>(
     DATASET_OPTIONS.map((d) => d.value)
   );
@@ -74,6 +128,7 @@ export function TrainingPanel() {
   const [now, setNow] = useState(() => Date.now());
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<number | null>(null);
+  const restoreAttemptedRef = useRef(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // 切换模型类型时重置参数
@@ -114,7 +169,28 @@ export function TrainingPanel() {
   }, []);
 
   const updateJobStatus = useCallback((next: JobStatus) => {
+    window.localStorage.setItem(ACTIVE_TRAINING_JOB_STORAGE_KEY, next.job_id);
     setJobStatus(next);
+    setJobId(next.job_id);
+    if (next.model_type === "lstm" || next.model_type === "bert") {
+      setModelType(next.model_type);
+      const datasetKey = next.model_type === "lstm" ? "TRAIN_DATASETS" : "BERT_TRAIN_DATASETS";
+      const restoredParams: Record<string, string> = {};
+      for (const [key, value] of Object.entries(next.config ?? {})) {
+        if (key === datasetKey) continue;
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          restoredParams[key] = String(value);
+        }
+      }
+      setParams({
+        ...(next.model_type === "lstm" ? LSTM_DEFAULTS : BERT_DEFAULTS),
+        ...restoredParams,
+      });
+      const restoredDatasets = next.config?.[datasetKey];
+      if (typeof restoredDatasets === "string") {
+        setSelectedDatasets(restoredDatasets.split(",").map((item) => item.trim()).filter(Boolean));
+      }
+    }
     if (next.logs?.length) {
       setLogLines((prev) => {
         const seen = new Set(prev);
@@ -157,6 +233,9 @@ export function TrainingPanel() {
       ...params,
       [datasetKey]: selectedDatasets.join(","),
     };
+    if (modelType === "bert") {
+      applyBertDatasetSelection(config, selectedDatasets);
+    }
 
     try {
       const res = await fetch("/api/training/start", {
@@ -181,12 +260,40 @@ export function TrainingPanel() {
     }
   };
 
-  const connectSSE = (id: string) => {
+  const startPolling = useCallback((id: string) => {
+    if (pollTimerRef.current != null) {
+      window.clearInterval(pollTimerRef.current);
+    }
+    setJobId(id);
+    window.localStorage.setItem(ACTIVE_TRAINING_JOB_STORAGE_KEY, id);
+    setConnectionState("polling");
+
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`/api/training/status/${id}`, { cache: "no-store" });
+        const data = await res.json();
+        if (data.ok && data.payload) {
+          updateJobStatus(data.payload as JobStatus);
+        } else {
+          appendLog("状态轮询失败: " + getErrorMessage(data));
+        }
+      } catch (err) {
+        appendLog("状态轮询请求失败: " + (err instanceof Error ? err.message : String(err)));
+      }
+    };
+
+    void fetchStatus();
+    pollTimerRef.current = window.setInterval(fetchStatus, 2000);
+  }, [appendLog, updateJobStatus]);
+
+  const connectSSE = useCallback((id: string) => {
     eventSourceRef.current?.close();
     if (pollTimerRef.current != null) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    setJobId(id);
+    window.localStorage.setItem(ACTIVE_TRAINING_JOB_STORAGE_KEY, id);
     setConnectionState("connecting");
     const es = new EventSource(`/api/training/stream/${id}`);
     eventSourceRef.current = es;
@@ -220,31 +327,70 @@ export function TrainingPanel() {
       appendLog("实时日志通道断开，切换为状态轮询...");
       startPolling(id);
     };
-  };
+  }, [appendLog, startPolling, updateJobStatus]);
 
-  const startPolling = (id: string) => {
-    if (pollTimerRef.current != null) {
-      window.clearInterval(pollTimerRef.current);
-    }
-    setConnectionState("polling");
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    restoreAttemptedRef.current = true;
 
-    const fetchStatus = async () => {
+    let disposed = false;
+
+    const restoreJob = async (id: string, reason: string): Promise<boolean> => {
       try {
         const res = await fetch(`/api/training/status/${id}`, { cache: "no-store" });
         const data = await res.json();
-        if (data.ok && data.payload) {
-          updateJobStatus(data.payload as JobStatus);
+        if (!data.ok || !data.payload) return false;
+
+        const status = data.payload as JobStatus;
+        if (disposed) return true;
+
+        appendLog(reason);
+        updateJobStatus(status);
+        if (isTerminalStatus(status.status)) {
+          setLoading(false);
+          setConnectionState("closed");
         } else {
-          appendLog("状态轮询失败: " + getErrorMessage(data));
+          setLoading(true);
+          connectSSE(status.job_id);
         }
-      } catch (err) {
-        appendLog("状态轮询请求失败: " + (err instanceof Error ? err.message : String(err)));
+        return true;
+      } catch {
+        return false;
       }
     };
 
-    void fetchStatus();
-    pollTimerRef.current = window.setInterval(fetchStatus, 2000);
-  };
+    const restore = async () => {
+      const storedJobId = window.localStorage.getItem(ACTIVE_TRAINING_JOB_STORAGE_KEY);
+      if (storedJobId) {
+        const restored = await restoreJob(storedJobId, `已从浏览器恢复训练任务: ${storedJobId}`);
+        if (restored) return;
+        window.localStorage.removeItem(ACTIVE_TRAINING_JOB_STORAGE_KEY);
+      }
+
+      try {
+        const res = await fetch("/api/training/jobs", { cache: "no-store" });
+        const data = await res.json();
+        const jobs = ((data.payload?.jobs ?? []) as TrainingJobItem[])
+          .filter((job) => job.status === "pending" || job.status === "running")
+          .sort((left, right) => {
+            const leftTime = new Date(left.started_at || "").getTime() || 0;
+            const rightTime = new Date(right.started_at || "").getTime() || 0;
+            return rightTime - leftTime;
+          });
+        if (jobs[0] && !disposed) {
+          await restoreJob(jobs[0].job_id, `已自动发现正在运行的训练任务: ${jobs[0].job_id}`);
+        }
+      } catch {
+        // 后端不可达时保持空状态，用户仍可手动启动训练。
+      }
+    };
+
+    void restore();
+
+    return () => {
+      disposed = true;
+    };
+  }, [appendLog, connectSSE, updateJobStatus]);
 
   const cancelTraining = async () => {
     if (!jobId) return;
@@ -295,7 +441,7 @@ export function TrainingPanel() {
     <Card className="w-full max-w-3xl">
       <CardHeader>
         <CardTitle>模型训练</CardTitle>
-        <CardDescription>配置参数并启动 LSTM 或 BERT 情感分析模型训练</CardDescription>
+        <CardDescription>配置参数并启动 LSTM 或 BERT 0-5 情感评分模型训练</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         {/* 模型类型选择 */}
@@ -468,12 +614,18 @@ export function TrainingPanel() {
             )}
 
             {/* 指标 */}
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricBox label="Elapsed" value={elapsedText} />
               <MetricBox label="Loss" value={jobStatus.progress.loss} suffix="" />
               <MetricBox label="Val Accuracy" value={jobStatus.progress.val_acc} suffix="%" isPercent />
               <MetricBox label="Val Macro F1" value={jobStatus.progress.val_f1} suffix="" />
+              <MetricBox label="Val Weighted F1" value={jobStatus.progress.val_weighted_f1} suffix="" />
+              <MetricBox label="Val MAE" value={jobStatus.progress.val_mae} suffix="" />
+              <MetricBox label="Val RMSE" value={jobStatus.progress.val_rmse} suffix="" />
+              <MetricBox label="Val QWK" value={jobStatus.progress.val_qwk} suffix="" />
+              <MetricBox label="Val Spearman" value={jobStatus.progress.val_spearman} suffix="" />
               <MetricBox label="Best F1" value={jobStatus.progress.best_f1} suffix="" />
+              <MetricBox label="Best Metric" value={jobStatus.progress.best_metric} suffix="" />
             </div>
           </div>
         )}
@@ -516,6 +668,32 @@ function getErrorMessage(data: unknown): string {
 
 function isTerminalStatus(status: string): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function applyBertDatasetSelection(config: Record<string, string>, selectedDatasets: string[]): void {
+  const selected = selectedDatasets.filter(Boolean);
+  config.BERT_SELECTED_DATASETS = selected.join(",");
+  config.BERT_TRAIN_DATASETS = selected.join(",");
+
+  const stage = (config.BERT_TRAINING_STAGE || "auto").trim().toLowerCase();
+  const realSelected = selected.filter((name) => BERT_REAL_MULTICLASS_DATASETS.has(name));
+  const pseudoSelected = selected.filter((name) => BERT_BINARY_PSEUDO_DATASETS.has(name));
+
+  if (stage === "teacher") {
+    config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    return;
+  }
+
+  if (stage === "student") {
+    config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
+    return;
+  }
+
+  if (stage === "auto") {
+    config.BERT_TEACHER_DATASETS = realSelected.join(",");
+    config.BERT_BINARY_PSEUDO_DATASETS = pseudoSelected.join(",");
+  }
 }
 
 function getConnectionText(state: "idle" | "connecting" | "live" | "polling" | "closed"): string {
@@ -590,7 +768,7 @@ function MetricBox({
   isPercent,
 }: {
   label: string;
-  value: number | string | null;
+  value: number | string | null | undefined;
   suffix?: string;
   isPercent?: boolean;
 }) {

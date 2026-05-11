@@ -4,13 +4,38 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
-# 抑制 HF Hub 后台线程请求和 safetensors 自动转换
-os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
+
+def _load_root_env_file() -> None:
+    """Load project .env before HuggingFace libraries inspect env vars."""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _configure_huggingface_env() -> None:
+    _load_root_env_file()
+    if os.getenv("HF_TOKEN") and "HF_HUB_DISABLE_IMPLICIT_TOKEN" not in os.environ:
+        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+    else:
+        os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "0")
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
+
+
+_configure_huggingface_env()
 
 
 MAX_LEN = int(os.getenv("BERT_MODEL_MAX_LEN", "128"))

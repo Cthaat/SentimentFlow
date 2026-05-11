@@ -2,16 +2,38 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from sentiment_scale import NUM_SENTIMENT_CLASSES, compute_classification_metrics
+
 from .config import MAX_LEN
 from .config import get_model_name
 from .dataset import CsvStreamDataset
+from .inference import predicted_classes_from_outputs
 from .text_processing import get_tokenizer
+
+
+@dataclass(frozen=True)
+class EvaluationMetrics:
+    accuracy: float
+    macro_f1: float
+    weighted_f1: float
+    mae: float
+    rmse: float
+    quadratic_weighted_kappa: float
+    spearman: float
+    confusion_matrix: list[list[int]]
+    support: list[int]
+    per_class_f1: list[float]
+
+    def __iter__(self):
+        """Backward-compatible unpacking as (accuracy, macro_f1)."""
+        yield self.accuracy
+        yield self.macro_f1
 
 
 def bert_collate_fn(batch, max_len: int = MAX_LEN):
@@ -25,10 +47,12 @@ def bert_collate_fn(batch, max_len: int = MAX_LEN):
         Dict with input_ids, attention_mask, labels as PyTorch tensors
     """
     tokenizer = get_tokenizer(get_model_name())
-    texts, labels = zip(*batch)
+    records = [_normalize_batch_record(item) for item in batch]
+    texts = [record["text"] for record in records]
+    labels = [int(record["label"]) for record in records]
 
     encoded = tokenizer(
-        list(texts),
+        texts,
         padding=True,
         truncation=True,
         max_length=max_len,
@@ -42,6 +66,13 @@ def bert_collate_fn(batch, max_len: int = MAX_LEN):
     }
 
 
+def _normalize_batch_record(item) -> dict:
+    if isinstance(item, dict):
+        return item
+    text, label = item
+    return {"text": str(text), "label": int(label)}
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -50,43 +81,51 @@ def evaluate(
     batch_size: int,
     max_len: int,
     label_map: dict | None = None,
-) -> Tuple[float, float]:
-    """在验证集上计算 Accuracy 和 Macro-F1。"""
-    eval_dataset = CsvStreamDataset(split, chunk_size=batch_size * 8, label_map=label_map)
+) -> EvaluationMetrics:
+    """在验证集上计算多分类和序数评分指标。"""
+    eval_dataset = CsvStreamDataset(
+        split,
+        chunk_size=batch_size * 8,
+        label_map=label_map,
+        labels_are_normalized=True,
+    )
     eval_loader = DataLoader(
         eval_dataset,
         batch_size=batch_size,
         num_workers=0,
         pin_memory=device.type == "cuda",
         drop_last=False,
-        collate_fn=bert_collate_fn,
+        collate_fn=lambda batch: bert_collate_fn(batch, max_len=max_len),
     )
 
     model.eval()
-    tp = fp = fn = tn = 0
+    true_labels: list[int] = []
+    pred_labels: list[int] = []
     for batch in eval_loader:
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
 
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
-        pred = torch.argmax(logits, dim=1)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        pred = predicted_classes_from_outputs(outputs)
 
-        tp += int(((pred == 1) & (labels == 1)).sum().item())
-        tn += int(((pred == 0) & (labels == 0)).sum().item())
-        fp += int(((pred == 1) & (labels == 0)).sum().item())
-        fn += int(((pred == 0) & (labels == 1)).sum().item())
+        true_labels.extend(labels.detach().cpu().tolist())
+        pred_labels.extend(pred.detach().cpu().tolist())
 
-    total = max(1, tp + tn + fp + fn)
-    accuracy = (tp + tn) / total
-
-    precision_pos = tp / max(1, tp + fp)
-    recall_pos = tp / max(1, tp + fn)
-    f1_pos = 2 * precision_pos * recall_pos / max(1e-12, precision_pos + recall_pos)
-
-    precision_neg = tn / max(1, tn + fn)
-    recall_neg = tn / max(1, tn + fp)
-    f1_neg = 2 * precision_neg * recall_neg / max(1e-12, precision_neg + recall_neg)
-
-    macro_f1 = 0.5 * (f1_pos + f1_neg)
-    return accuracy, macro_f1
+    metrics = compute_classification_metrics(
+        true_labels,
+        pred_labels,
+        num_classes=NUM_SENTIMENT_CLASSES,
+    )
+    return EvaluationMetrics(
+        accuracy=metrics["accuracy"],
+        macro_f1=metrics["macro_f1"],
+        weighted_f1=metrics["weighted_f1"],
+        mae=metrics["mae"],
+        rmse=metrics["rmse"],
+        quadratic_weighted_kappa=metrics["quadratic_weighted_kappa"],
+        spearman=metrics["spearman"],
+        confusion_matrix=metrics["confusion_matrix"],
+        support=metrics["support"],
+        per_class_f1=metrics["per_class_f1"],
+    )

@@ -18,8 +18,10 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
+
+from sentiment_scale import NUM_SENTIMENT_CLASSES
+from ordinal_loss import DistanceAwareOrdinalLoss, OrdinalLossConfig
 
 from .checkpoint import save_checkpoint
 from .config import MAX_LEN, VOCAB_SIZE, get_checkpoint_path, get_epochs, get_runtime_settings
@@ -71,6 +73,7 @@ def _build_train_loader(train_split, settings, device: torch.device, label_map: 
         max_len=MAX_LEN,
         vocab_size=VOCAB_SIZE,
         label_map=label_map,
+        labels_are_normalized=True,
     )
     loader_kwargs = {
         "batch_size": settings.batch_size,
@@ -85,19 +88,30 @@ def _build_train_loader(train_split, settings, device: torch.device, label_map: 
     return DataLoader(dataset, **loader_kwargs)
 
 
-def _build_loss_fn(neg_count: int, pos_count: int, total_count: int, settings, device: torch.device):
-    if settings.use_weighted_loss and neg_count > 0 and pos_count > 0:
-        class_weights = torch.tensor(
-            [total_count / (2 * neg_count), total_count / (2 * pos_count)],
-            dtype=torch.float32,
-            device=device,
-        )
+def _build_loss_fn(class_counts: list[int], settings, device: torch.device):
+    total_count = sum(class_counts)
+    present_classes = sum(1 for count in class_counts if count > 0)
+    if settings.use_weighted_loss and present_classes > 1:
+        weights = [
+            total_count / (present_classes * count) if count > 0 else 0.0
+            for count in class_counts
+        ]
+        class_weights = torch.tensor(weights, dtype=torch.float32, device=device)
         print(
-            f"Using weighted loss: neg_w={class_weights[0].item():.4f}, "
-            f"pos_w={class_weights[1].item():.4f}"
+            "Using weighted loss: "
+            + ", ".join(f"score_{idx}_w={weight:.4f}" for idx, weight in enumerate(weights))
         )
-        return nn.CrossEntropyLoss(weight=class_weights)
-    return nn.CrossEntropyLoss()
+        return DistanceAwareOrdinalLoss(class_weights=class_weights, config=_ordinal_loss_config())
+    return DistanceAwareOrdinalLoss(config=_ordinal_loss_config())
+
+
+def _ordinal_loss_config() -> OrdinalLossConfig:
+    return OrdinalLossConfig(
+        ce_weight=float(os.getenv("ORDINAL_CE_WEIGHT", "1.0")),
+        distance_weight=float(os.getenv("ORDINAL_DISTANCE_WEIGHT", "0.35")),
+        label_smoothing=float(os.getenv("ORDINAL_LABEL_SMOOTHING", "0.05")),
+        pseudo_label_smoothing=float(os.getenv("PSEUDO_LABEL_SMOOTHING", "0.02")),
+    )
 
 
 def train_model(cancel_event: threading.Event | None = None):
@@ -121,16 +135,15 @@ def train_model(cancel_event: threading.Event | None = None):
     train_size = len(train_split)
     val_size = len(val_split)
 
-    neg_count, pos_count = get_label_distribution(train_split, label_map)
-    total_count = max(1, neg_count + pos_count)
+    class_counts = get_label_distribution(train_split, label_map)
+    total_count = max(1, sum(class_counts))
 
     print(f"Datasets: {', '.join(dataset_names)}")
     print("DATA SUMMARY:")
     print(f"  Total train samples (after merge): {train_size:,}")
     print(f"  Total val samples: {val_size:,}")
     print(
-        f"Train samples: {total_count}, neg={neg_count}, pos={pos_count}, "
-        f"pos_ratio={pos_count / total_count:.4f}"
+        f"Train samples: {total_count}, score_counts={class_counts}"
     )
     print(
         f"Training config: batch_size={settings.batch_size}, "
@@ -144,8 +157,8 @@ def train_model(cancel_event: threading.Event | None = None):
     loader = _build_train_loader(train_split, settings, device, label_map)
     estimated_batches = max(1, math.ceil(train_size / settings.batch_size))
 
-    model = SentimentLSTMModel(VOCAB_SIZE).to(device)
-    loss_fn = _build_loss_fn(neg_count, pos_count, total_count, settings, device)
+    model = SentimentLSTMModel(VOCAB_SIZE, num_classes=NUM_SENTIMENT_CLASSES).to(device)
+    loss_fn = _build_loss_fn(class_counts, settings, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.learning_rate)
     # 使用 PyTorch 的自动混合精度（AMP）功能来加速训练，特别是在 GPU 上。GradScaler 用于动态调整梯度缩放以避免数值不稳定。
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
@@ -198,7 +211,7 @@ def train_model(cancel_event: threading.Event | None = None):
                 optimizer.zero_grad(set_to_none=True)
 
             # 累积损失以计算平均损失值，便于在日志中输出。每个 epoch 结束后，在验证集上评估模型性能，并根据 Macro-F1 指标保存最优模型。
-            total_loss += loss.detach()
+            total_loss += loss.detach() * settings.grad_accum_steps
 
             if step == 1 or step % log_interval == 0:
                 step_loss = (loss.detach() * settings.grad_accum_steps).item()
@@ -219,7 +232,7 @@ def train_model(cancel_event: threading.Event | None = None):
             break
 
         # 在验证集上评估模型性能，计算 Accuracy 和 Macro-F1 指标。根据 Macro-F1 指标判断是否更新最优模型，并实现早停逻辑以避免过拟合。
-        val_acc, val_f1 = evaluate(
+        metrics = evaluate(
             model,
             val_split,
             device,
@@ -229,13 +242,22 @@ def train_model(cancel_event: threading.Event | None = None):
             label_map=label_map,
         )
         avg_loss = (total_loss / max(1, batch_count)).item()
-        print(f"Epoch {epoch + 1}, Loss: {avg_loss:.4f}, ValAcc: {val_acc:.4f}, ValMacroF1: {val_f1:.4f}")
+        print(
+            f"Epoch {epoch + 1}, Loss: {avg_loss:.4f}, "
+            f"ValAcc: {metrics.accuracy:.4f}, "
+            f"ValMacroF1: {metrics.macro_f1:.4f}, "
+            f"ValWeightedF1: {metrics.weighted_f1:.4f}, "
+            f"ValMAE: {metrics.mae:.4f}, "
+            f"ValQWK: {metrics.quadratic_weighted_kappa:.4f}"
+        )
+        print(f"ValConfusionMatrix: {metrics.confusion_matrix}")
+        print(f"ValPerClassF1: {[round(value, 4) for value in metrics.per_class_f1]}")
 
         model.train()
 
         # 根据验证 Macro-F1 指标判断是否更新最优模型，并实现早停逻辑以避免过拟合。如果当前 epoch 的 Macro-F1 指标比之前的最佳值提升超过 early_stop_min_delta，则更新最佳模型并重置无提升计数器；否则增加无提升计数器，并在达到 early_stop_patience 时触发早停。
-        if val_f1 > best_f1 + settings.early_stop_min_delta:
-            best_f1 = val_f1
+        if metrics.macro_f1 > best_f1 + settings.early_stop_min_delta:
+            best_f1 = metrics.macro_f1
             best_epoch = epoch + 1
             best_state_dict = deepcopy(model.state_dict())
             no_improve_epochs = 0
@@ -246,13 +268,14 @@ def train_model(cancel_event: threading.Event | None = None):
                 vocab_size=VOCAB_SIZE,
                 best_val_f1=best_f1,
                 best_epoch=best_epoch,
+                metrics=metrics,
             )
             print(f"Best model updated at epoch {epoch + 1}, ValMacroF1={best_f1:.4f}")
         else:
             no_improve_epochs += 1
             print(
                 f"No significant improvement for {no_improve_epochs} epoch(s) "
-                f"(best={best_f1:.4f}, current={val_f1:.4f}, "
+                f"(best={best_f1:.4f}, current={metrics.macro_f1:.4f}, "
                 f"min_delta={settings.early_stop_min_delta})."
             )
             if settings.early_stop_patience > 0 and no_improve_epochs >= settings.early_stop_patience:

@@ -29,8 +29,10 @@ def load_model(force_reload: bool = False):
 
     _ensure_project_root_in_sys_path()
     from BERT.pipeline import load_or_train
+    from BERT.inference import prepare_inference_model
 
     _model, _device = load_or_train()
+    _model = prepare_inference_model(_model, _device)
     _loaded_ckpt_path = current_path
     return _model, _device
 

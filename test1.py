@@ -43,7 +43,7 @@ def encode_text(text, max_len=5):
     return ids
 
 texts = ["hello world", "hi there", "a b", "single", " ", "", "  ", "ok", "no", "yes"]
-labels = [1, 0, 1, 0, 1, 0, 0, 1, 0, 1]
+labels = [5, 0, 4, 1, 3, 2, 0, 5, 1, 4]
 ds = Step5Detaset("test.csv", max_len=5)
 
 for x, y in ds:
