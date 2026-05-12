@@ -67,13 +67,13 @@ cd C:\Code\SentimentFlow\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8846
 ```
 
 启动后访问：
 
-- 健康检查：http://127.0.0.1:8000/health
-- Swagger 文档：http://127.0.0.1:8000/docs
+- 健康检查：http://127.0.0.1:8846/health
+- Swagger 文档：http://127.0.0.1:8846/docs
 
 ### 3. 前端本地启动
 
@@ -106,13 +106,13 @@ docker compose up --build
 
 | 服务 | 地址 |
 | --- | --- |
-| 前端 | http://localhost:3000 |
-| 后端 | http://localhost:8000 |
+| 前端 | http://localhost:30008 |
+| 后端 | http://localhost:8846 |
 
-`docker-compose.yml` 会把项目根目录挂载到容器 `/workspace`，并设置：
+`docker-compose.yml` 会把项目根目录挂载到后端容器 `/workspace`，前端使用生产构建镜像，并设置：
 
 - `SENTIMENTFLOW_PROJECT_ROOT=/workspace`
-- 前端 `BACKEND_API_URL=http://backend:8000`
+- 前端 `BACKEND_API_URL=http://backend:8846`
 
 ## 配置说明
 
@@ -140,9 +140,9 @@ docker compose up --build
 如果没有指定后端地址，前端会依次尝试：
 
 ```text
-http://127.0.0.1:8000
-http://localhost:8000
-http://backend:8000
+http://127.0.0.1:8846
+http://localhost:8846
+http://backend:8846
 ```
 
 ### LSTM 训练配置
@@ -186,7 +186,7 @@ http://backend:8000
 ### 通过前端训练
 
 1. 启动后端和前端。
-2. 打开 http://localhost:3000。
+2. 打开 http://localhost:3000（本地开发）或 http://localhost:30008（Docker）。
 3. 切换到 `模型训练`。
 4. 选择 `LSTM` 或 `BERT (RoBERTa)`。
 5. 选择数据集和超参数。
