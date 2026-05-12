@@ -102,7 +102,7 @@ cd C:\Code\SentimentFlow
 docker compose up
 ```
 
-`docker-compose.yml` 已为前后端配置 `pull_policy: build` 和 `build.no_cache: true`，执行 `docker compose up` 时会重新构建镜像，不复用已有镜像缓存。后台运行可使用：
+`docker-compose.yml` 已为前后端配置 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。后台运行可使用：
 
 ```powershell
 docker compose up -d
