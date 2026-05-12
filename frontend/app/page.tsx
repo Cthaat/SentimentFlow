@@ -7,8 +7,10 @@ import { TrainingPanel } from "@/components/training-panel";
 
 type Tab = "predict" | "train" | "models";
 const ACTIVE_TAB_STORAGE_KEY = "sentimentflow.activeTab";
-const ACTIVE_TAB_CHANGE_EVENT = "sentimentflow.activeTabChanged";
 const TABS: Tab[] = ["predict", "train", "models"];
+const activeTabListeners = new Set<() => void>();
+let activeTabSnapshot: Tab = "predict";
+let activeTabInitialized = false;
 
 function normalizeTab(value: string | null): Tab {
 	return TABS.includes(value as Tab) ? (value as Tab) : "predict";
@@ -24,31 +26,60 @@ function getStoredActiveTab(): Tab {
 	}
 }
 
+function getActiveTabSnapshot(): Tab {
+	return activeTabSnapshot;
+}
+
 function getServerActiveTab(): Tab {
 	return "predict";
 }
 
-function subscribeActiveTab(onStoreChange: () => void): () => void {
-	window.addEventListener("storage", onStoreChange);
-	window.addEventListener(ACTIVE_TAB_CHANGE_EVENT, onStoreChange);
+function emitActiveTabChange(): void {
+	for (const listener of activeTabListeners) {
+		listener();
+	}
+}
+
+function initializeActiveTabSnapshot(): void {
+	if (activeTabInitialized || typeof window === "undefined") return;
+	activeTabInitialized = true;
+	activeTabSnapshot = getStoredActiveTab();
+}
+
+function subscribeActiveTab(listener: () => void): () => void {
+	activeTabListeners.add(listener);
+	initializeActiveTabSnapshot();
+	queueMicrotask(listener);
+
+	const handleStorage = (event: StorageEvent) => {
+		if (event.key !== ACTIVE_TAB_STORAGE_KEY) return;
+		activeTabSnapshot = normalizeTab(event.newValue);
+		emitActiveTabChange();
+	};
+	window.addEventListener("storage", handleStorage);
+
 	return () => {
-		window.removeEventListener("storage", onStoreChange);
-		window.removeEventListener(ACTIVE_TAB_CHANGE_EVENT, onStoreChange);
+		activeTabListeners.delete(listener);
+		window.removeEventListener("storage", handleStorage);
 	};
 }
 
 function writeStoredActiveTab(tab: Tab): void {
+	activeTabSnapshot = tab;
 	try {
 		window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
-		window.dispatchEvent(new Event(ACTIVE_TAB_CHANGE_EVENT));
 	} catch {
-		// localStorage 不可用时保持当前页内交互不崩溃。
+		// localStorage 不可用时仍保留当前页内状态。
 	}
 }
 
 export default function Home() {
-	const activeTab = useSyncExternalStore(subscribeActiveTab, getStoredActiveTab, getServerActiveTab);
-	const setActiveTab = useCallback((tab: Tab) => writeStoredActiveTab(tab), []);
+	const activeTab = useSyncExternalStore(subscribeActiveTab, getActiveTabSnapshot, getServerActiveTab);
+
+	const setActiveTab = useCallback((tab: Tab) => {
+		writeStoredActiveTab(tab);
+		emitActiveTabChange();
+	}, []);
 
 	return (
 		<div className="min-h-screen bg-zinc-50 px-4 py-10 dark:bg-zinc-900">
