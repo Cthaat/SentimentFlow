@@ -1,9 +1,11 @@
 FROM node:20-bookworm-slim AS deps
 
 WORKDIR /app
+ARG YARN_REGISTRY=https://registry.npmjs.org
 
 COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile
+RUN yarn config set registry "$YARN_REGISTRY" \
+	&& yarn install --frozen-lockfile
 
 FROM node:20-bookworm-slim AS builder
 
