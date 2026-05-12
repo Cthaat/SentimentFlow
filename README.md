@@ -99,7 +99,19 @@ http://localhost:3000
 
 ```powershell
 cd C:\Code\SentimentFlow
-docker compose up --build
+.\docker-rebuild-up.ps1
+```
+
+该脚本每次都会执行 `docker compose build --no-cache`，即使本地已有镜像也会重新构建，然后用 `docker compose up --force-recreate --remove-orphans` 重新创建容器并运行。后台运行可使用：
+
+```powershell
+.\docker-rebuild-up.ps1 -Detached
+```
+
+如需同时拉取最新基础镜像，可使用：
+
+```powershell
+.\docker-rebuild-up.ps1 -Pull
 ```
 
 服务端口：
