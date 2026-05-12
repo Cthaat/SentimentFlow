@@ -20,8 +20,20 @@ function readStoredTheme(): Theme {
 		return "light";
 	}
 
-	const stored = localStorage.getItem("theme") as Theme | null;
-	return stored || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+	try {
+		const stored = window.localStorage.getItem("theme");
+		if (stored === "light" || stored === "dark") {
+			return stored;
+		}
+	} catch {
+		// 浏览器禁用存储时使用系统主题或默认亮色。
+	}
+
+	try {
+		return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+	} catch {
+		return "light";
+	}
 }
 
 function applyTheme(newTheme: Theme) {
@@ -34,7 +46,11 @@ function applyTheme(newTheme: Theme) {
 	} else {
 		document.documentElement.classList.remove("dark");
 	}
-	localStorage.setItem("theme", newTheme);
+	try {
+		window.localStorage.setItem("theme", newTheme);
+	} catch {
+		// 存储失败不影响当前页面主题切换。
+	}
 }
 
 function emitThemeChange() {
