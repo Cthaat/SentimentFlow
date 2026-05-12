@@ -21,7 +21,7 @@ export function getBaseCandidates(): string[] {
     return [configuredBase];
   }
   // 127.0.0.1 比 localhost 更稳定，避免本地 IPv6/DNS 抖动。
-  return ["http://127.0.0.1:8000", "http://localhost:8000", "http://backend:8000"];
+  return ["http://127.0.0.1:8846", "http://localhost:8846", "http://backend:8846"];
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
