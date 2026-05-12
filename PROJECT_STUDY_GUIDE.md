@@ -828,7 +828,7 @@ Next.js 前端: http://localhost:3000
 BACKEND_API_URL=http://backend:8846
 ```
 
-这是 Docker Compose 服务名通信。`docker-compose.yml` 为前后端服务配置了 `pull_policy: build` 和 `build.no_cache: true`，执行 `docker compose up` 时会重新构建镜像，不复用已有镜像缓存。
+这是 Docker Compose 服务名通信。`docker-compose.yml` 为前后端服务配置了 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。
 
 ## 16. 测试怎么讲
 
