@@ -828,7 +828,7 @@ Next.js 前端: http://localhost:3000
 BACKEND_API_URL=http://backend:8846
 ```
 
-这是 Docker Compose 服务名通信。根目录 `docker-rebuild-up.ps1` 是推荐启动入口，每次都会先执行 `docker compose build --no-cache`，再执行 `docker compose up --force-recreate --remove-orphans`，确保无论本地是否已有镜像都会重新构建并重新创建容器。
+这是 Docker Compose 服务名通信。`docker-compose.yml` 为前后端服务配置了 `pull_policy: build` 和 `build.no_cache: true`，执行 `docker compose up` 时会重新构建镜像，不复用已有镜像缓存。
 
 ## 16. 测试怎么讲
 
