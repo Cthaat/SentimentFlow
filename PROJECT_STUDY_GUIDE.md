@@ -807,7 +807,7 @@ label, sentiment, Star, score, rating
 两个服务：
 
 ```text
-FastAPI 后端: http://localhost:8000
+FastAPI 后端: http://localhost:8846
 Next.js 前端: http://localhost:3000
 ```
 
@@ -820,12 +820,12 @@ Next.js 前端: http://localhost:3000
 | 服务 | 镜像/构建 | 作用 |
 | --- | --- | --- |
 | `backend` | `./backend` Dockerfile | FastAPI 后端 |
-| `frontend` | `node:20` | Next.js 前端 |
+| `frontend` | `./frontend` Dockerfile | Next.js 前端生产镜像 |
 
 容器内前端使用：
 
 ```text
-BACKEND_API_URL=http://backend:8000
+BACKEND_API_URL=http://backend:8846
 ```
 
 这是 Docker Compose 服务名通信。
