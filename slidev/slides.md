@@ -653,10 +653,10 @@ class: section-slide
   <div class="badge bd-m mb-3">Proxy Layer</div>
   <h3>前端代理的价值</h3>
   <div class="proxy-note-list">
-    <p><span>同源</span>浏览器只访问 Next.js 接口，消除 CORS。</p>
-    <p><span>探测</span><code>api-proxy.ts</code> 顺序探测 127.0.0.1 / localhost / backend。</p>
-    <p><span>缓存</span>记住最近成功的后端地址，减少重复探测。</p>
-    <p><span>兜底</span>训练日志断开后自动切换状态轮询。</p>
+    <p><strong>同源</strong><span>浏览器只访问 Next.js 接口，消除 CORS。</span></p>
+    <p><strong>探测</strong><span><code>api-proxy.ts</code> 顺序探测 127.0.0.1 / localhost / backend。</span></p>
+    <p><strong>缓存</strong><span>记住最近成功的后端地址，减少重复探测。</span></p>
+    <p><strong>兜底</strong><span>训练日志断开后自动切换状态轮询。</span></p>
   </div>
 </div>
 
