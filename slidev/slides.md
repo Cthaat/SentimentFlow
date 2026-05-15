@@ -619,34 +619,44 @@ class: section-slide
 
 # 前端：三个工作台
 
-<div class="grid grid-cols-2 gap-5 mt-7">
+<div class="grid grid-cols-[0.95fr_1.05fr] gap-5 mt-6 workbench-grid">
 
-<div class="space-y-3">
+<div class="workbench-stack">
 
-<div class="card card-l">
-  <h3 class="mb-1"><code>IntegrationTestPanel</code></h3>
-  <p class="text-sm">健康检查、预测请求、评分方块、概率条、原始 JSON。</p>
+<div class="card card-l workbench-card">
+  <div class="workbench-index">01</div>
+  <div>
+    <h3>IntegrationTestPanel</h3>
+    <p>健康检查、预测请求、评分方块、概率条、原始 JSON。</p>
+  </div>
 </div>
 
-<div class="card card-l">
-  <h3 class="mb-1"><code>TrainingPanel</code></h3>
-  <p class="text-sm">超参数配置、数据集选择、SSE 日志、轮询兜底、任务恢复。</p>
+<div class="card card-l workbench-card">
+  <div class="workbench-index">02</div>
+  <div>
+    <h3>TrainingPanel</h3>
+    <p>超参数配置、数据集选择、SSE 日志、轮询兜底、任务恢复。</p>
+  </div>
 </div>
 
-<div class="card card-l">
-  <h3 class="mb-1"><code>ModelManagementPanel</code></h3>
-  <p class="text-sm">模型列表、指标展示、活跃模型切换、安全删除、刷新。</p>
+<div class="card card-l workbench-card">
+  <div class="workbench-index">03</div>
+  <div>
+    <h3>ModelManagementPanel</h3>
+    <p>模型列表、指标展示、活跃模型切换、安全删除、刷新。</p>
+  </div>
 </div>
 
 </div>
 
-<div class="card-alt">
-  <h3 class="mb-3">前端代理的价值</h3>
-  <div class="space-y-2 text-sm">
-    <p>· 浏览器只访问 Next.js 同源接口，消除 CORS。</p>
-    <p>· <code>api-proxy.ts</code> 顺序探测 127.0.0.1 / localhost / backend。</p>
-    <p>· 缓存最近成功后端地址，避免重复探测。</p>
-    <p>· 训练日志断开后自动切换状态轮询。</p>
+<div class="card-alt proxy-note">
+  <div class="badge bd-m mb-3">Proxy Layer</div>
+  <h3>前端代理的价值</h3>
+  <div class="proxy-note-list">
+    <p><span>同源</span>浏览器只访问 Next.js 接口，消除 CORS。</p>
+    <p><span>探测</span><code>api-proxy.ts</code> 顺序探测 127.0.0.1 / localhost / backend。</p>
+    <p><span>缓存</span>记住最近成功的后端地址，减少重复探测。</p>
+    <p><span>兜底</span>训练日志断开后自动切换状态轮询。</p>
   </div>
 </div>
 

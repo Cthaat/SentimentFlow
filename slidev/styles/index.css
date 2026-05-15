@@ -6,6 +6,8 @@
 :root {
   --c-bg: #f8f9fc;
   --c-surface: #ffffff;
+  --c-surface-soft: rgba(255,255,255,0.78);
+  --c-surface-muted: rgba(241,245,249,0.78);
   --c-dark: #0c1222;
   --c-dark-2: #151d30;
   --c-primary: #6366f1;
@@ -17,9 +19,9 @@
   --c-text-muted: #64748b;
   --c-border: #e8ecf1;
   --c-border-light: #f1f5f9;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
-  --shadow-lg: 0 12px 32px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04);
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.04), 0 10px 24px -22px rgba(15,23,42,0.26);
+  --shadow-md: 0 6px 18px -18px rgba(15,23,42,0.35), 0 1px 3px rgba(15,23,42,0.04);
+  --shadow-lg: 0 14px 36px -30px rgba(15,23,42,0.45), 0 2px 6px rgba(15,23,42,0.04);
 }
 
 /* ---------- Global Typography ---------- */
@@ -48,8 +50,8 @@
 }
 
 .slidev-layout p, .slidev-layout li {
-  font-size: 1rem;
-  line-height: 1.6;
+  font-size: 0.96rem;
+  line-height: 1.62;
 }
 
 /* ============================================
@@ -141,25 +143,41 @@
    CARDS
    ============================================ */
 .card {
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: 14px;
-  padding: 1.5rem;
+  background: var(--c-surface-soft);
+  border: 1px solid rgba(226,232,240,0.92);
+  border-radius: 8px;
+  padding: 1.15rem 1.25rem;
   box-shadow: var(--shadow-sm);
 }
 
-.card-accent {
-  border-left: 3px solid var(--c-primary);
+.card h3,
+.card-alt h3,
+.stat-card h3 {
+  font-size: 1.05rem;
+  line-height: 1.34;
+  margin-top: 0;
 }
 
+.card p,
+.card-alt p,
+.stat-card p,
+.callout p {
+  margin: 0;
+  color: var(--c-text-muted);
+}
+
+.card-l,
+.card-accent,
 .card-teal {
   border-left: 3px solid var(--c-teal);
 }
 
+.card-w,
 .card-amber {
   border-left: 3px solid var(--c-amber);
 }
 
+.card-r,
 .card-rose {
   border-left: 3px solid var(--c-rose);
 }
@@ -168,18 +186,26 @@
   background: var(--c-dark);
   color: white;
   border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 1.5rem;
+}
+
+.card-alt {
+  background: var(--c-surface-muted);
+  border: 1px solid rgba(226,232,240,0.82);
+  border-radius: 8px;
+  padding: 1.15rem 1.25rem;
+  box-shadow: var(--shadow-sm);
 }
 
 /* ============================================
    HIGHLIGHT / CALLOUT BOX
    ============================================ */
 .callout {
-  border-radius: 10px;
-  padding: 0.875rem 1.125rem;
-  font-size: 0.9375rem;
-  line-height: 1.55;
+  border-radius: 7px;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .callout-indigo {
@@ -188,26 +214,30 @@
   border-left: 3px solid var(--c-primary);
 }
 
+.co-g,
 .callout-teal {
   background: rgba(20,184,166,0.05);
   border: 1px solid rgba(20,184,166,0.12);
   border-left: 3px solid var(--c-teal);
 }
 
+.co-w,
 .callout-amber {
   background: rgba(245,158,11,0.06);
   border: 1px solid rgba(245,158,11,0.12);
   border-left: 3px solid var(--c-amber);
 }
 
+.co-r,
 .callout-rose {
   background: rgba(244,63,94,0.05);
   border: 1px solid rgba(244,63,94,0.1);
   border-left: 3px solid var(--c-rose);
 }
 
+.co-p,
 .callout-plain {
-  background: var(--c-surface);
+  background: rgba(255,255,255,0.7);
   border: 1px solid var(--c-border);
 }
 
@@ -230,11 +260,13 @@
   color: var(--c-primary);
 }
 
+.bd-g,
 .badge-teal {
   background: rgba(20,184,166,0.1);
   color: #0d9488;
 }
 
+.bd-w,
 .badge-amber {
   background: rgba(245,158,11,0.1);
   color: #d97706;
@@ -251,6 +283,11 @@
 }
 
 .badge-muted {
+  background: rgba(100,116,139,0.08);
+  color: var(--c-text-muted);
+}
+
+.bd-m {
   background: rgba(100,116,139,0.08);
   color: var(--c-text-muted);
 }
@@ -292,10 +329,10 @@
    STAT CARD
    ============================================ */
 .stat-card {
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: 14px;
-  padding: 1.5rem;
+  background: var(--c-surface-soft);
+  border: 1px solid rgba(226,232,240,0.92);
+  border-radius: 8px;
+  padding: 1.15rem 1.2rem;
   text-align: center;
   box-shadow: var(--shadow-sm);
 }
@@ -307,7 +344,7 @@ table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--c-border);
 }
@@ -342,8 +379,25 @@ tr:last-child td {
    CODE
    ============================================ */
 .slidev-code {
-  border-radius: 10px !important;
+  border-radius: 8px !important;
   font-size: 0.8rem !important;
+}
+
+.slidev-layout :not(pre) > code {
+  background: rgba(15,23,42,0.055);
+  border: 1px solid rgba(15,23,42,0.045);
+  border-radius: 4px;
+  color: #172033;
+  font-size: 0.9em;
+  padding: 0.05rem 0.26rem;
+}
+
+.slidev-layout .card h3 code {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 0.96em;
+  padding: 0;
 }
 
 /* ============================================
@@ -393,8 +447,8 @@ tr:last-child td {
 }
 
 .flow-chip {
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
+  background: var(--c-surface-soft);
+  border: 1px solid rgba(226,232,240,0.9);
   border-radius: 8px;
   padding: 0.65rem 0.875rem;
   font-size: 0.8rem;
@@ -411,12 +465,82 @@ tr:last-child td {
 }
 
 .metric-card {
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
+  background: var(--c-surface-soft);
+  border: 1px solid rgba(226,232,240,0.9);
+  border-radius: 8px;
   padding: 1rem;
   text-align: center;
   box-shadow: var(--shadow-sm);
+}
+
+/* ============================================
+   SOFT WORKBENCH BLOCKS
+   ============================================ */
+.workbench-grid {
+  align-items: start;
+}
+
+.workbench-stack {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.workbench-card {
+  display: grid;
+  grid-template-columns: 2.15rem 1fr;
+  gap: 0.85rem;
+  align-items: start;
+  min-height: 6.05rem;
+}
+
+.workbench-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 7px;
+  background: rgba(20,184,166,0.11);
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workbench-card h3 {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.94rem;
+  letter-spacing: 0;
+  line-height: 1.25;
+  margin: 0 0 0.35rem;
+}
+
+.workbench-card p {
+  font-size: 0.82rem;
+  line-height: 1.52;
+}
+
+.proxy-note {
+  min-height: 19.35rem;
+}
+
+.proxy-note-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.95rem;
+}
+
+.proxy-note-list p {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  gap: 0.85rem;
+  align-items: start;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.proxy-note-list span {
+  color: var(--c-text);
+  font-weight: 700;
 }
 
 .metric-card .metric-value {
