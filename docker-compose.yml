@@ -25,3 +25,10 @@ services:
             - "30008:3000"
         depends_on:
             - backend
+
+    slides:
+        build:
+            context: ./slidev
+        pull_policy: build
+        ports:
+            - "3031:3030"

@@ -947,7 +947,7 @@ cd frontend
 yarn dev
 ```
 
-  <p class="text-xs mt-2" style="color:var(--light);">前端 :3000 &nbsp;·&nbsp; 后端 :8846</p>
+  <p class="text-xs mt-2" style="color:var(--light);">前端 :3000 &nbsp;·&nbsp; 后端 :8846 &nbsp;·&nbsp; PPT :3030</p>
 </div>
 
 <div>
@@ -958,7 +958,7 @@ cd C:\Code\SentimentFlow
 docker compose up
 ```
 
-  <p class="text-xs mt-2" style="color:var(--light);">前端 :30008 &nbsp;·&nbsp; 后端 :8846</p>
+  <p class="text-xs mt-2" style="color:var(--light);">前端 :30008 &nbsp;·&nbsp; 后端 :8846 &nbsp;·&nbsp; PPT :3031</p>
 </div>
 
 </div>
@@ -1009,41 +1009,7 @@ layout: center
 
 # 互动演示
 
-<div class="demo-box mt-8 mx-auto" style="max-width:380px;">
-
-  <p class="text-sm mb-4" style="color:var(--light);">模拟情感预测请求</p>
-
-  <div v-click>
-    <button class="demo-btn" @click="predict">开始预测</button>
-  </div>
-
-  <div v-click class="mt-6">
-    <div class="demo-score">{{ score }}</div>
-    <div class="text-sm" style="color:var(--muted);">{{ label }}</div>
-    <p class="mt-2 text-xs" style="color:var(--light);">置信度 {{ conf }}%</p>
-    <div class="mt-2 mx-auto rounded-full overflow-hidden" style="width:180px;height:4px;background:var(--border);">
-      <div class="demo-bar" :style="{ width: conf + '%' }"></div>
-    </div>
-  </div>
-
-</div>
-
-<script setup>
-import { ref } from 'vue'
-const score = ref('—')
-const label = ref('点击按钮开始')
-const conf = ref(0)
-const results = [
-  { score: 5, label: '极端正面', conf: 93 },
-  { score: 4, label: '略微正面', conf: 88 },
-  { score: 0, label: '极端负面', conf: 91 },
-  { score: 3, label: '中性', conf: 76 },
-]
-function predict() {
-  const r = results[Math.floor(Math.random() * results.length)]
-  score.value = r.score; label.value = r.label; conf.value = r.conf
-}
-</script>
+<SentimentDemo />
 
 <!-- ============================================================
      QUOTE

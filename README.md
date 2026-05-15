@@ -102,7 +102,7 @@ cd C:\Code\SentimentFlow
 docker compose up
 ```
 
-`docker-compose.yml` 已为前后端配置 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。后台运行可使用：
+`docker-compose.yml` 已为前端、后端和 Slidev 演示稿配置 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。后台运行可使用：
 
 ```powershell
 docker compose up -d
@@ -114,8 +114,9 @@ docker compose up -d
 | --- | --- |
 | 前端 | http://localhost:30008 |
 | 后端 | http://localhost:8846 |
+| PPT 演示稿 | http://localhost:3031 |
 
-`docker-compose.yml` 会把项目根目录挂载到后端容器 `/workspace`，前端使用生产构建镜像，并设置：
+`docker-compose.yml` 会把项目根目录挂载到后端容器 `/workspace`，前端使用生产构建镜像，PPT 演示稿由 `slidev/` 构建为静态 SPA 后通过 Nginx 提供访问，并设置：
 
 - `SENTIMENTFLOW_PROJECT_ROOT=/workspace`
 - 前端 `BACKEND_API_URL=http://backend:8846`

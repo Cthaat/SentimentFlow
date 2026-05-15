@@ -639,11 +639,13 @@ class: text-white bg-slate-950
     <h3 class="text-xl font-semibold">本地开发</h3>
     <p class="mt-2 text-slate-600">前端：<code>http://localhost:3000</code></p>
     <p class="mt-1 text-slate-600">后端：<code>http://127.0.0.1:8846</code></p>
+    <p class="mt-1 text-slate-600">PPT：<code>http://localhost:3030</code></p>
   </div>
   <div class="rounded-xl border border-slate-200 p-5">
     <h3 class="text-xl font-semibold">Docker Compose</h3>
     <p class="mt-2 text-slate-600">前端：<code>http://localhost:30008</code></p>
     <p class="mt-1 text-slate-600">后端：<code>http://localhost:8846</code></p>
+    <p class="mt-1 text-slate-600">PPT：<code>http://localhost:3031</code></p>
   </div>
 </div>
 
@@ -664,6 +666,7 @@ docker compose up
 | --- | --- | --- |
 | `frontend` | `30008:3000` | 生产构建镜像 |
 | `backend` | `8846:8846` | 挂载项目到 `/workspace` |
+| `slides` | `3031:3030` | Slidev 演示稿静态站点 |
 
 <div class="mt-5 rounded-xl border border-slate-200 p-4 text-sm">
   关键环境变量：`PREDICT_MODEL_TYPE`、`MODEL_PATH`、`BERT_CHECKPOINT_PATH`、`SENTIMENTFLOW_PROJECT_ROOT`、`BACKEND_API_URL`、`BACKEND_API_TIMEOUT_MS`

@@ -815,12 +815,13 @@ Next.js 前端: http://localhost:3000
 
 ### 15.2 Docker 部署
 
-`docker-compose.yml` 定义两个服务：
+`docker-compose.yml` 定义三个服务：
 
 | 服务 | 镜像/构建 | 作用 |
 | --- | --- | --- |
 | `backend` | `./backend` Dockerfile | FastAPI 后端 |
 | `frontend` | `./frontend` Dockerfile | Next.js 前端生产镜像 |
+| `slides` | `./slidev` Dockerfile | Slidev 答辩演示稿静态站点 |
 
 容器内前端使用：
 
@@ -828,7 +829,7 @@ Next.js 前端: http://localhost:3000
 BACKEND_API_URL=http://backend:8846
 ```
 
-这是 Docker Compose 服务名通信。`docker-compose.yml` 为前后端服务配置了 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。
+这是 Docker Compose 服务名通信。`docker-compose.yml` 为前端、后端和演示稿服务配置了 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。Docker 环境下前端访问 `http://localhost:30008`，后端访问 `http://localhost:8846`，PPT 演示稿访问 `http://localhost:3031`。
 
 ## 16. 测试怎么讲
 
