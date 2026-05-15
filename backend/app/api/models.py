@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,55 @@ def _scan_models() -> list[dict[str, Any]]:
     return models
 
 
+def _assert_inside_models_dir(path: Path, models_dir: Path) -> None:
+    resolved_path = path.resolve()
+    if resolved_path == models_dir:
+        raise HTTPException(status_code=400, detail="Refusing to delete models directory")
+    try:
+        resolved_path.relative_to(models_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Refusing to delete outside models directory")
+
+
+def _resolve_delete_target(model_id: str, models_dir: Path) -> Path:
+    model_id = model_id.strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required")
+    if (
+        Path(model_id).name != model_id
+        or "/" in model_id
+        or "\\" in model_id
+        or model_id in {".", ".."}
+    ):
+        raise HTTPException(status_code=400, detail="Invalid model_id")
+
+    candidates = [models_dir / model_id, models_dir / f"{model_id}.pt"]
+    for candidate in candidates:
+        _assert_inside_models_dir(candidate, models_dir)
+        if candidate.exists():
+            return candidate
+
+    scanned_target = next((m for m in _scan_models() if m["model_id"] == model_id), None)
+    if scanned_target is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    path = Path(scanned_target["path"])
+    _assert_inside_models_dir(path, models_dir)
+    return path
+
+
+def _cleanup_empty_model_dirs(models_dir: Path) -> None:
+    for path in sorted(
+        (p for p in models_dir.rglob("*") if p.is_dir() and not p.name.startswith(".")),
+        key=lambda p: len(p.parts),
+        reverse=True,
+    ):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+
 @router.get("/", response_model=ModelListResponse)
 def list_models():
     models = _scan_models()
@@ -149,25 +199,15 @@ def set_active(req: SetActiveModelRequest):
 
 @router.delete("/{model_id}")
 def delete_model(model_id: str):
-    models = _scan_models()
-    target = next((m for m in models if m["model_id"] == model_id), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    path = Path(target["path"])
     models_dir = _get_models_dir().resolve()
-    try:
-        resolved_path = path.resolve()
-        resolved_path.relative_to(models_dir)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Refusing to delete outside models directory")
+    path = _resolve_delete_target(model_id, models_dir)
 
     try:
         if path.is_dir():
-            import shutil
             shutil.rmtree(path)
         else:
             path.unlink()
+        _cleanup_empty_model_dirs(models_dir)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete: {exc}")
 
