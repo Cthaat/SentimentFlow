@@ -5,7 +5,10 @@
       "Bash(npx -p typescript tsc --noEmit --pretty)",
       "Bash(npx -p typescript tsc -p c:/Code/SentimentFlow/frontend/tsconfig.json --noEmit)",
       "Bash(python -c ' *)",
-      "Bash(timeout 5 python -c ' *)"
+      "Bash(timeout 5 python -c ' *)",
+      "Bash(npx slidev *)",
+      "Bash(Start-Sleep -Seconds 10)",
+      "Bash(Get-Content \"C:\\\\Users\\\\Edge\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Code-SentimentFlow\\\\40a7942f-cc62-4912-861e-d93efb7b5033\\\\tasks\\\\bgq0zlv72.output\" -Tail 30)"
     ]
   }
 }

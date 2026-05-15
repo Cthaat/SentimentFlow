@@ -1,0 +1,444 @@
+/* ============================================
+   SentimentFlow — Polished Defense Deck
+   ============================================ */
+
+/* ---------- Design Tokens ---------- */
+:root {
+  --c-bg: #f8f9fc;
+  --c-surface: #ffffff;
+  --c-dark: #0c1222;
+  --c-dark-2: #151d30;
+  --c-primary: #6366f1;
+  --c-primary-light: #818cf8;
+  --c-teal: #14b8a6;
+  --c-amber: #f59e0b;
+  --c-rose: #f43f5e;
+  --c-text: #1e293b;
+  --c-text-muted: #64748b;
+  --c-border: #e8ecf1;
+  --c-border-light: #f1f5f9;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04);
+}
+
+/* ---------- Global Typography ---------- */
+.slidev-layout {
+  font-family: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  color: var(--c-text);
+  background: var(--c-bg);
+  padding: 3rem 4rem !important;
+}
+
+.slidev-layout h1 {
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--c-text);
+  line-height: 1.15;
+}
+
+.slidev-layout h2 {
+  font-weight: 600;
+  letter-spacing: -0.018em;
+}
+
+.slidev-layout h3 {
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.slidev-layout p, .slidev-layout li {
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+/* ============================================
+   COVER SLIDE
+   ============================================ */
+.cover-wrap {
+  background: var(--c-dark) !important;
+  color: white !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.cover-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 50%, rgba(99,102,241,0.15) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 70% at 75% 30%, rgba(20,184,166,0.08) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 50% at 50% 80%, rgba(99,102,241,0.06) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.cover-wrap .cover-content {
+  position: relative;
+  z-index: 1;
+}
+
+.cover-wrap h1 {
+  font-size: 4.5rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.03em !important;
+  background: linear-gradient(135deg, #e0e7ff 0%, #a5b4fc 40%, #67e8f9 100%) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  background-clip: text !important;
+}
+
+/* ============================================
+   SECTION DIVIDER
+   ============================================ */
+.section-wrap {
+  background: var(--c-dark-2) !important;
+  color: white !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.section-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 50% at 30% 60%, rgba(99,102,241,0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 60% at 80% 20%, rgba(20,184,166,0.06) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.section-wrap .section-inner {
+  position: relative;
+  z-index: 1;
+}
+
+.section-wrap h1 {
+  font-size: 3.5rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.03em !important;
+  color: white !important;
+}
+
+.section-wrap .section-num {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-primary-light);
+  margin-bottom: 1rem;
+}
+
+.section-wrap .section-sub {
+  font-size: 1.2rem;
+  line-height: 1.7;
+  color: rgba(255,255,255,0.55);
+  max-width: 560px;
+  margin-inline: auto;
+}
+
+/* ============================================
+   CARDS
+   ============================================ */
+.card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.card-accent {
+  border-left: 3px solid var(--c-primary);
+}
+
+.card-teal {
+  border-left: 3px solid var(--c-teal);
+}
+
+.card-amber {
+  border-left: 3px solid var(--c-amber);
+}
+
+.card-rose {
+  border-left: 3px solid var(--c-rose);
+}
+
+.card-dark {
+  background: var(--c-dark);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 1.5rem;
+}
+
+/* ============================================
+   HIGHLIGHT / CALLOUT BOX
+   ============================================ */
+.callout {
+  border-radius: 10px;
+  padding: 0.875rem 1.125rem;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.callout-indigo {
+  background: rgba(99,102,241,0.06);
+  border: 1px solid rgba(99,102,241,0.12);
+  border-left: 3px solid var(--c-primary);
+}
+
+.callout-teal {
+  background: rgba(20,184,166,0.05);
+  border: 1px solid rgba(20,184,166,0.12);
+  border-left: 3px solid var(--c-teal);
+}
+
+.callout-amber {
+  background: rgba(245,158,11,0.06);
+  border: 1px solid rgba(245,158,11,0.12);
+  border-left: 3px solid var(--c-amber);
+}
+
+.callout-rose {
+  background: rgba(244,63,94,0.05);
+  border: 1px solid rgba(244,63,94,0.1);
+  border-left: 3px solid var(--c-rose);
+}
+
+.callout-plain {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+}
+
+/* ============================================
+   BADGE / PILL
+   ============================================ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.7rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.badge-indigo {
+  background: rgba(99,102,241,0.1);
+  color: var(--c-primary);
+}
+
+.badge-teal {
+  background: rgba(20,184,166,0.1);
+  color: #0d9488;
+}
+
+.badge-amber {
+  background: rgba(245,158,11,0.1);
+  color: #d97706;
+}
+
+.badge-rose {
+  background: rgba(244,63,94,0.1);
+  color: #e11d48;
+}
+
+.badge-dark {
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.8);
+}
+
+.badge-muted {
+  background: rgba(100,116,139,0.08);
+  color: var(--c-text-muted);
+}
+
+/* ============================================
+   TAG PILLS (cover / large)
+   ============================================ */
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 1rem;
+  border-radius: 9999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.7);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+/* ============================================
+   STEP NUMBER
+   ============================================ */
+.step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--c-primary);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  margin-right: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* ============================================
+   STAT CARD
+   ============================================ */
+.stat-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============================================
+   TABLES
+   ============================================ */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--c-border);
+}
+
+thead {
+  background: #f1f5f9;
+}
+
+th {
+  padding: 0.55rem 0.75rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--c-text-muted);
+  text-align: left;
+  border-bottom: 1px solid var(--c-border);
+}
+
+td {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--c-border-light);
+  background: var(--c-surface);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+/* ============================================
+   CODE
+   ============================================ */
+.slidev-code {
+  border-radius: 10px !important;
+  font-size: 0.8rem !important;
+}
+
+/* ============================================
+   CLOSING SLIDE
+   ============================================ */
+.closing-wrap {
+  background: var(--c-dark) !important;
+  color: white !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.closing-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 50%, rgba(99,102,241,0.12) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 70% at 75% 30%, rgba(20,184,166,0.06) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.closing-wrap .closing-inner {
+  position: relative;
+  z-index: 1;
+}
+
+.closing-wrap h1 {
+  font-size: 3rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.025em !important;
+  color: white !important;
+}
+
+.closing-wrap .closing-highlight {
+  color: var(--c-primary-light);
+  font-weight: 700;
+}
+
+/* ============================================
+   FLOW ROW (compact key-value pairs)
+   ============================================ */
+.flow-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+}
+
+.flow-chip {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 0.65rem 0.875rem;
+  font-size: 0.8rem;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============================================
+   METRIC GRID
+   ============================================ */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.75rem;
+}
+
+.metric-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  padding: 1rem;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.metric-card .metric-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--c-primary);
+}
+
+.metric-card .metric-label {
+  font-size: 0.7rem;
+  color: var(--c-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 0.25rem;
+}
+
+/* ============================================
+   RESPONSIVE GRID HELPERS
+   ============================================ */
+.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.gap-4 { gap: 1rem; }
+.gap-5 { gap: 1.25rem; }
+.gap-6 { gap: 1.5rem; }
