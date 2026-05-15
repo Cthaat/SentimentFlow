@@ -25,7 +25,7 @@ fonts:
   --surface: #F5F3F0;
   --surface2:#E5E1DA;
   --divider: #CBC6BD;
-  --cover:   #B8B3AA;
+  --cover:   #C2B9AC;
   --text:    #5E5A55;
   --muted:   #8E8A85;
   --light:   #A8A49F;
@@ -59,17 +59,17 @@ fonts:
 /* ---------- Cover ---------- */
 .cover-slide {
   background: var(--cover) !important;
-  color: var(--surface) !important;
+  color: #F0EDE7 !important;
 }
 .cover-slide h1 {
   font-size: 4rem !important;
   font-weight: 600 !important;
   letter-spacing: -0.032em !important;
-  color: var(--surface) !important;
+  color: #F0EDE7 !important;
 }
 .cover-slide .cover-line {
   width: 40px; height: 1px;
-  background: rgba(255,255,255,0.25);
+  background: rgba(0,0,0,0.1);
   margin: 1.25rem auto;
 }
 
@@ -158,9 +158,9 @@ fonts:
   display: inline-flex; align-items: center;
   padding: 0.2rem 0.7rem; border-radius: 9999px;
   font-size: 0.72rem; font-weight: 500;
-  background: rgba(255,255,255,0.1);
-  color: rgba(255,255,255,0.5);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.08);
+  color: #6B6560;
+  border: 1px solid rgba(0,0,0,0.06);
 }
 
 /* ---------- Table ---------- */
@@ -193,11 +193,11 @@ tr:last-child td { border-bottom: none; }
 /* ---------- Closing ---------- */
 .closing-slide {
   background: var(--cover) !important;
-  color: var(--surface) !important;
+  color: #F0EDE7 !important;
 }
 .closing-slide h1 {
   font-size: 2.6rem !important; font-weight: 600 !important;
-  letter-spacing: -0.022em !important; color: var(--surface) !important;
+  letter-spacing: -0.022em !important; color: #F0EDE7 !important;
 }
 
 /* ---------- Interactive demo ---------- */
@@ -248,11 +248,11 @@ class: cover-slide
 
 <div class="cover-line"></div>
 
-<div class="text-xl font-light tracking-wide" style="color:rgba(255,255,255,0.55);">
+<div class="text-xl font-light tracking-wide" style="color:#8A8580;">
 中文情感分析全栈系统
 </div>
 
-<div class="mt-4 text-sm" style="color:rgba(255,255,255,0.32);">
+<div class="mt-4 text-sm" style="color:#9E9993;">
 0-5 六档情感评分 &nbsp;·&nbsp; 在线推理 &nbsp;·&nbsp; 后台训练 &nbsp;·&nbsp; 模型管理
 </div>
 
@@ -1100,15 +1100,15 @@ class: closing-slide
 
 # 谢谢
 
-<div class="mt-6 text-xl font-light tracking-wide" style="color:rgba(255,255,255,0.45);">
+<div class="mt-6 text-xl font-light tracking-wide" style="color:#9E9993;">
 SentimentFlow · 中文情感分析全栈系统
 </div>
 
-<div class="mt-3 text-sm" style="color:rgba(255,255,255,0.25);">
+<div class="mt-3 text-sm" style="color:#A8A49F;">
 可训练 · 可管理 · 可推理 · 可演示 · 可维护
 </div>
 
-<div class="mt-10 text-xs" style="color:rgba(255,255,255,0.15);">
+<div class="mt-10 text-xs" style="color:#B5B0A8;">
 欢迎提问
 </div>
 
