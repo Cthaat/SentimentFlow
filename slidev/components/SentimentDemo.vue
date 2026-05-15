@@ -34,6 +34,7 @@ interface PredictResponse {
 type DemoStatus = 'sample' | 'loading' | 'live' | 'error'
 
 const scoreLabels = ['极端负面', '明显负面', '略微负面', '中性', '略微正面', '极端正面']
+const directBackendCandidates = ['http://127.0.0.1:8846', 'http://localhost:8846']
 
 const cases: DemoCase[] = [
   {
@@ -142,23 +143,45 @@ async function predictCustomText() {
   errorMessage.value = ''
 
   try {
-    const response = await fetch(`${getBackendBaseUrl()}/api/predict/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    })
-    const data = await response.json() as PredictResponse
-    if (!response.ok) {
-      throw new Error(data.detail || `预测请求失败：HTTP ${response.status}`)
-    }
-
-    result.value = resultFromResponse(data)
+    result.value = resultFromResponse(await requestPrediction(text))
     status.value = 'live'
   }
   catch (error) {
     status.value = 'error'
     errorMessage.value = error instanceof Error ? error.message : '后端预测请求失败'
   }
+}
+
+async function requestPrediction(text: string): Promise<PredictResponse> {
+  const errors: string[] = []
+  for (const endpoint of getPredictEndpoints()) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      const data = await readJsonResponse(response)
+      if (!response.ok) {
+        throw new Error(data.detail || `HTTP ${response.status}`)
+      }
+      return data
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : 'request failed'
+      errors.push(`${endpoint} -> ${message}`)
+    }
+  }
+
+  throw new Error(`后端预测不可用：${errors.join('；')}`)
+}
+
+async function readJsonResponse(response: Response): Promise<PredictResponse> {
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    throw new Error(`返回不是 JSON：${response.status}`)
+  }
+  return await response.json() as PredictResponse
 }
 
 function resultFromResponse(data: PredictResponse): DemoResult {
@@ -196,10 +219,24 @@ function clampProbability(value: number | undefined) {
   return Math.max(0, Math.min(1, value as number))
 }
 
-function getBackendBaseUrl() {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:8846'
-  const hostname = window.location.hostname || '127.0.0.1'
-  return `http://${hostname}:8846`
+function getPredictEndpoints() {
+  const endpoints = ['/api/predict/']
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location
+    const directHost = normalizeLocalHost(hostname)
+    endpoints.push(`${protocol}//${directHost}:8846/api/predict/`)
+  }
+  for (const baseUrl of directBackendCandidates) {
+    endpoints.push(`${baseUrl}/api/predict/`)
+  }
+  return [...new Set(endpoints)]
+}
+
+function normalizeLocalHost(hostname: string) {
+  if (!hostname || hostname === '0.0.0.0' || hostname === '::' || hostname === '[::]') {
+    return '127.0.0.1'
+  }
+  return hostname
 }
 
 function toPercent(value: number) {

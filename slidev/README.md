@@ -12,8 +12,8 @@ Docker Compose also builds and serves this deck:
 - visit <http://localhost:3031>
 
 The interactive demo can call the FastAPI backend for live text prediction. In
-Compose, the `slides` service starts `backend` as a dependency and the browser
-calls <http://localhost:8846/api/predict/>.
+Compose, the `slides` service starts `backend` as a dependency and Nginx proxies
+same-origin `/api/` requests to `backend:8846`.
 
 Edit the [slides.md](./slides.md) to see the changes.
 

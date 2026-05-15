@@ -120,7 +120,7 @@ docker compose up -d
 
 - `SENTIMENTFLOW_PROJECT_ROOT=/workspace`
 - 前端 `BACKEND_API_URL=http://backend:8846`
-- `slides` 依赖 `backend`，这样互动演示里的现场预测可以直接请求后端 `/api/predict/`
+- `slides` 依赖 `backend`，并由 Slidev Nginx 把同源 `/api/` 代理到 `backend:8846`，这样互动演示里的现场预测不依赖浏览器直连后端端口
 
 ## 配置说明
 
