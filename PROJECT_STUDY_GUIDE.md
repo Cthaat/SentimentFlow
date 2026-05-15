@@ -829,7 +829,7 @@ Next.js 前端: http://localhost:3000
 BACKEND_API_URL=http://backend:8846
 ```
 
-这是 Docker Compose 服务名通信。`docker-compose.yml` 为前端、后端和演示稿服务配置了 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。Docker 环境下前端访问 `http://localhost:30008`，后端访问 `http://localhost:8846`，PPT 演示稿访问 `http://localhost:3031`。
+这是 Docker Compose 服务名通信。`docker-compose.yml` 为前端、后端和演示稿服务配置了 `pull_policy: build`，执行 `docker compose up` 时会触发镜像构建；依赖文件未变化时会复用 Docker 缓存，避免每次重新安装依赖。Docker 环境下前端访问 `http://localhost:30008`，后端访问 `http://localhost:8846`，PPT 演示稿访问 `http://localhost:3031`。演示稿里的“现场预测”按钮会直接调用后端 `/api/predict/`，所以 `slides` 服务会依赖 `backend` 并复用同一套评分契约。
 
 ## 16. 测试怎么讲
 
