@@ -32,3 +32,5 @@ services:
         pull_policy: build
         ports:
             - "3031:3030"
+        depends_on:
+            - backend
