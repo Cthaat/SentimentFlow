@@ -2,17 +2,17 @@
 theme: seriph
 title: SentimentFlow — 中文情感分析全栈系统
 info: |
-  SentimentFlow 项目答辩与技术汇报。
+    SentimentFlow 项目答辩与技术汇报。
 author: SentimentFlow Team
 highlighter: shiki
 lineNumbers: false
 aspectRatio: 16/9
 drawings:
-  persist: false
+    persist: false
 transition: fade
 fonts:
-  sans: 'Inter, Noto Sans SC'
-  mono: 'JetBrains Mono, Fira Code'
+    sans: "Inter, Noto Sans SC"
+    mono: "JetBrains Mono, Fira Code"
 ---
 
 <style>
@@ -237,9 +237,12 @@ tr:last-child td { border-bottom: none; }
 <!-- ============================================================
      COVER
      ============================================================ -->
+
 ---
+
 layout: center
 class: cover-slide
+
 ---
 
 <div class="text-center">
@@ -273,6 +276,7 @@ class: cover-slide
 <!-- ============================================================
      TOC
      ============================================================ -->
+
 ---
 
 # 汇报结构
@@ -288,7 +292,7 @@ class: cover-slide
 <div class="card card-w">
   <div class="badge bd-w mb-3">Part 02</div>
   <h3>整体架构与请求链路</h3>
-  <p class="mt-1 text-sm">从浏览器、API 代理到 LSTM/BERT 执行器。</p>
+  <p class="mt-1 text-sm">用户输入文本，经过 API 转发、模型推理，最后返回结果。</p>
 </div>
 
 <div class="card card-l">
@@ -308,22 +312,26 @@ class: cover-slide
 <!-- ============================================================
      SECTION 01
      ============================================================ -->
+
 ---
+
 layout: center
 class: section-slide
+
 ---
 
 <div class="text-center">
 
 <div class="sec-num">Part 01</div>
 <h1>项目目标</h1>
-<div class="sec-sub mt-5">让中文情感分析从"脚本可跑"变成"系统可用"</div>
+<div class="sec-sub mt-5">把中文情感分析从一个脚本，变成一个真正可用的系统</div>
 
 </div>
 
 <!-- ============================================================
      WHY
      ============================================================ -->
+
 ---
 
 # 为什么需要 SentimentFlow
@@ -341,7 +349,7 @@ class: section-slide
 
 <div class="callout co-w">
   <div class="font-semibold mb-0.5" style="color:var(--accent2);">工程割裂</div>
-  <p class="text-sm">训练、推理、前端各自为政，标签契约容易不一致。</p>
+  <p class="text-sm">训练、推理、前端各自为战，标签很容易对不上。</p>
 </div>
 
 <div class="callout co-p">
@@ -353,27 +361,27 @@ class: section-slide
 </div>
 
 <div>
-  <h3 class="text-base mb-3">项目给出的方案</h3>
+  <h3 class="text-base mb-3">项目的解决方案</h3>
   <div class="grid grid-cols-2 gap-2">
 
 <div class="callout co-g">
   <div class="font-semibold text-sm" style="color:var(--accent);">0-5 六档评分</div>
-  <p class="text-xs mt-0.5">统一契约表达情绪方向与强度。</p>
+  <p class="text-xs mt-0.5">用统一的标签表达情绪方向和强度</p>
 </div>
 
 <div class="callout co-g">
   <div class="font-semibold text-sm" style="color:var(--accent);">LSTM + BERT</div>
-  <p class="text-xs mt-0.5">轻量 baseline 与语义主力并行。</p>
+  <p class="text-xs mt-0.5">轻量级快速方案和深度学习方案双轨</p>
 </div>
 
 <div class="callout co-g">
-  <div class="font-semibold text-sm" style="color:var(--accent);">训练闭环</div>
-  <p class="text-xs mt-0.5">前端启动训练，SSE 推送日志指标。</p>
+  <div class="font-semibold text-sm" style="color:var(--accent);">完整训练闭环</div>
+  <p class="text-xs mt-0.5">前端可以启动训练，实时看日志和指标</p>
 </div>
 
 <div class="callout co-g">
-  <div class="font-semibold text-sm" style="color:var(--accent);">模型管理</div>
-  <p class="text-xs mt-0.5">扫描、启用、删除和展示模型。</p>
+  <div class="font-semibold text-sm" style="color:var(--accent);">模型管理面板</div>
+  <p class="text-xs mt-0.5">列表、切换、删除、一键管理</p>
 </div>
 
   </div>
@@ -384,6 +392,7 @@ class: section-slide
 <!-- ============================================================
      DELIVERY
      ============================================================ -->
+
 ---
 
 # 项目交付能力
@@ -417,22 +426,26 @@ class: section-slide
 <!-- ============================================================
      SECTION 02
      ============================================================ -->
+
 ---
+
 layout: center
 class: section-slide
+
 ---
 
 <div class="text-center">
 
 <div class="sec-num">Part 02</div>
 <h1>系统架构</h1>
-<div class="sec-sub mt-5">从浏览器点击到模型输出，链路清晰可追踪</div>
+<div class="sec-sub mt-5">用户输入 → API 转发 → 模型推理 → 结果返回，每一步都清楚</div>
 
 </div>
 
 <!-- ============================================================
      ARCHITECTURE
      ============================================================ -->
+
 ---
 
 # 整体架构图
@@ -470,6 +483,7 @@ flowchart LR
 <!-- ============================================================
      0-5 CONTRACT
      ============================================================ -->
+
 ---
 
 # 统一契约：0-5 情感评分
@@ -478,14 +492,14 @@ flowchart LR
 
 <div>
 
-| 分 | 中文标签 | 英文标签 |
-|:--:|:---|:---|
-| 0 | 极端负面 | `extremely_negative` |
-| 1 | 明显负面 | `clearly_negative` |
-| 2 | 略微负面 | `slightly_negative` |
-| 3 | 中性 | `neutral` |
-| 4 | 略微正面 | `slightly_positive` |
-| 5 | 极端正面 | `extremely_positive` |
+| 分  | 中文标签 | 英文标签             |
+| :-: | :------- | :------------------- |
+|  0  | 极端负面 | `extremely_negative` |
+|  1  | 明显负面 | `clearly_negative`   |
+|  2  | 略微负面 | `slightly_negative`  |
+|  3  | 中性     | `neutral`            |
+|  4  | 略微正面 | `slightly_positive`  |
+|  5  | 极端正面 | `extremely_positive` |
 
 </div>
 
@@ -507,6 +521,7 @@ flowchart LR
 <!-- ============================================================
      TWO FLOWS
      ============================================================ -->
+
 ---
 
 # 两条核心业务链路
@@ -546,6 +561,7 @@ flowchart LR
 <!-- ============================================================
      PREDICT PATH
      ============================================================ -->
+
 ---
 
 # 一次预测请求如何走完
@@ -567,12 +583,12 @@ flowchart LR
 <div class="grid grid-cols-[1fr_1.3fr] gap-5 mt-4">
 
 <div class="callout co-g text-sm">
-  <div class="font-semibold mb-2">关键护栏</div>
+  <div class="font-semibold mb-2">防护机制</div>
   <div class="space-y-1">
-    <p>· Pydantic 限制 text 长度</p>
-    <p>· 模型缺失返回 404 + 提示</p>
-    <p>· 异常时关键词基线兜底</p>
-    <p>· 关键词冲突启用 guard</p>
+    <p>• 输入长度限制</p>
+    <p>• 模型不存在时友好提示</p>
+    <p>• 模型推理失败的降级方案</p>
+    <p>• 对抗关键词的防护</p>
   </div>
 </div>
 
@@ -580,15 +596,12 @@ flowchart LR
 
 ```json
 {
-  "score": 5,
-  "label_zh": "极端正面",
-  "confidence": 0.9321,
-  "probabilities": [
-    0.001, 0.002, 0.004,
-    0.018, 0.043, 0.932
-  ],
-  "source": "bert",
-  "model_name": "bert_20260509_064555"
+	"score": 5,
+	"label_zh": "极端正面",
+	"confidence": 0.9321,
+	"probabilities": [0.001, 0.002, 0.004, 0.018, 0.043, 0.932],
+	"source": "bert",
+	"model_name": "bert_20260509_064555"
 }
 ```
 
@@ -599,9 +612,12 @@ flowchart LR
 <!-- ============================================================
      SECTION 03
      ============================================================ -->
+
 ---
+
 layout: center
 class: section-slide
+
 ---
 
 <div class="text-center">
@@ -615,6 +631,7 @@ class: section-slide
 <!-- ============================================================
      FRONTEND
      ============================================================ -->
+
 ---
 
 # 前端：三个工作台
@@ -650,13 +667,13 @@ class: section-slide
 </div>
 
 <div class="card-alt proxy-note">
-  <div class="badge bd-m mb-3">Proxy Layer</div>
-  <h3>前端代理的价值</h3>
+  <div class="badge bd-m mb-3">前端代理层</div>
+  <h3>为什么需要它</h3>
   <div class="proxy-note-list">
-    <p><strong>同源</strong><span>浏览器只访问 Next.js 接口，消除 CORS。</span></p>
-    <p><strong>探测</strong><span><code>api-proxy.ts</code> 顺序探测 127.0.0.1 / localhost / backend。</span></p>
-    <p><strong>缓存</strong><span>记住最近成功的后端地址，减少重复探测。</span></p>
-    <p><strong>兜底</strong><span>训练日志断开后自动切换状态轮询。</span></p>
+    <p><strong>解决跨域</strong><span>浏览器直接访问 Next.js，不走后端跨域。</span></p>
+    <p><strong>灵活发现</strong><span>自动探测本地或容器内的后端地址。</span></p>
+    <p><strong>记住成功</strong><span>缓存住第一次成功的后端地址，后续快速连接。</span></p>
+    <p><strong>智能降级</strong><span>训练日志掉线时自动切到轮询，用户无感。</span></p>
   </div>
 </div>
 
@@ -665,6 +682,7 @@ class: section-slide
 <!-- ============================================================
      BACKEND
      ============================================================ -->
+
 ---
 
 # 后端：三层架构
@@ -672,8 +690,8 @@ class: section-slide
 <div class="grid grid-cols-3 gap-4 mt-8">
 
 <div class="stat-card">
-  <div class="badge bd-m mb-3">API Layer</div>
-  <h3 class="mb-1">HTTP 契约</h3>
+  <div class="badge bd-m mb-3">接口层</div>
+  <h3 class="mb-1">HTTP 端点</h3>
   <div class="text-sm space-y-0.5">
     <p><code>/health</code></p>
     <p><code>/api/predict/</code></p>
@@ -683,24 +701,24 @@ class: section-slide
 </div>
 
 <div class="stat-card">
-  <div class="badge bd-m mb-3">Service Layer</div>
-  <h3 class="mb-1">业务编排</h3>
+  <div class="badge bd-m mb-3">业务逻辑</div>
+  <h3 class="mb-1">核心服务</h3>
   <div class="text-sm space-y-0.5">
-    <p>· 模型选择与检查</p>
-    <p>· 关键词 guard</p>
-    <p>· 后台训练线程</p>
-    <p>· 日志与指标解析</p>
+    <p>• 模型选择和检验</p>
+    <p>• 对抗防护</p>
+    <p>• 后台训练调度</p>
+    <p>• 日志和指标聚合</p>
   </div>
 </div>
 
 <div class="stat-card">
-  <div class="badge bd-m mb-3">Model Layer</div>
-  <h3 class="mb-1">推理执行</h3>
+  <div class="badge bd-m mb-3">推理层</div>
+  <h3 class="mb-1">模型执行</h3>
   <div class="text-sm space-y-0.5">
-    <p>· LSTM checkpoint 加载</p>
-    <p>· BERT checkpoint 校验</p>
-    <p>· GPU / CPU 设备选择</p>
-    <p>· 概率到评分转换</p>
+    <p>• LSTM 推理执行</p>
+    <p>• BERT 推理执行</p>
+    <p>• 硬件选择（GPU / CPU）</p>
+    <p>• 概率转分数</p>
   </div>
 </div>
 
@@ -713,6 +731,7 @@ class: section-slide
 <!-- ============================================================
      MODEL MANAGEMENT
      ============================================================ -->
+
 ---
 
 # 模型管理
@@ -731,14 +750,14 @@ class: section-slide
 <div>
   <h3 class="mb-3 text-base">前端展示哪些信息</h3>
 
-| 字段 | 用途 |
-|:---|:---|
-| `model_id` | 目录名，含类型与时间戳 |
-| `size_mb` | 模型体积，便于清理 |
-| `best_f1` | 最佳 F1 表现 |
-| `best_mae` | 有序误差指标 |
-| `best_qwk` | 有序评分一致性 |
-| `best_epoch` | 最佳 epoch |
+| 字段         | 用途                   |
+| :----------- | :--------------------- |
+| `model_id`   | 目录名，含类型与时间戳 |
+| `size_mb`    | 模型体积，便于清理     |
+| `best_f1`    | 最佳 F1 表现           |
+| `best_mae`   | 有序误差指标           |
+| `best_qwk`   | 有序评分一致性         |
+| `best_epoch` | 最佳 epoch             |
 
 </div>
 
@@ -751,9 +770,12 @@ class: section-slide
 <!-- ============================================================
      SECTION 04
      ============================================================ -->
+
 ---
+
 layout: center
 class: section-slide
+
 ---
 
 <div class="text-center">
@@ -767,6 +789,7 @@ class: section-slide
 <!-- ============================================================
      LSTM
      ============================================================ -->
+
 ---
 
 # LSTM 路线
@@ -785,8 +808,8 @@ flowchart LR
 <div class="grid grid-cols-2 gap-5 mt-6">
 
 <div class="callout co-g">
-  <div class="font-semibold mb-1" style="color:var(--accent);">轻量 · 快速 · 可解释</div>
-  <p class="text-sm">快速跑通训练闭环，适合作为 baseline 和答辩演示。</p>
+  <div class="font-semibold mb-1" style="color:var(--accent);">轻量、快速、易解释</div>
+  <p class="text-sm">可以快速跑通整个流程，是验证想法和演示的好选择。</p>
 </div>
 
 <div>
@@ -803,6 +826,7 @@ flowchart LR
 <!-- ============================================================
      BERT
      ============================================================ -->
+
 ---
 
 # BERT / RoBERTa 路线
@@ -836,6 +860,7 @@ flowchart LR
 <!-- ============================================================
      TEACHER / STUDENT
      ============================================================ -->
+
 ---
 
 # Teacher / Student 策略
@@ -879,6 +904,7 @@ flowchart LR
 <!-- ============================================================
      LOSS & METRICS
      ============================================================ -->
+
 ---
 
 # 有序损失与评估指标
@@ -899,13 +925,13 @@ flowchart LR
 <div>
   <h3 class="mb-3 text-base">为什么不能只看 Accuracy</h3>
 
-| 指标 | 关注点 |
-|:---|:---|
-| `Macro-F1` | 少数类别是否被忽略 |
-| `Weighted-F1` | 整体加权分类表现 |
-| `MAE / RMSE` | 预测离真实有多远 |
-| `QWK` | 有序评分一致性 |
-| `Spearman` | 情绪排序一致性 |
+| 指标          | 关注点             |
+| :------------ | :----------------- |
+| `Macro-F1`    | 少数类别是否被忽略 |
+| `Weighted-F1` | 整体加权分类表现   |
+| `MAE / RMSE`  | 预测离真实有多远   |
+| `QWK`         | 有序评分一致性     |
+| `Spearman`    | 情绪排序一致性     |
 
 </div>
 
@@ -914,9 +940,12 @@ flowchart LR
 <!-- ============================================================
      SECTION 05
      ============================================================ -->
+
 ---
+
 layout: center
 class: section-slide
+
 ---
 
 <div class="text-center">
@@ -930,6 +959,7 @@ class: section-slide
 <!-- ============================================================
      DEPLOYMENT
      ============================================================ -->
+
 ---
 
 # 部署与运行
@@ -970,6 +1000,7 @@ docker compose up
 <!-- ============================================================
      TESTING & DEMO
      ============================================================ -->
+
 ---
 
 # 测试保障 & 演示路线
@@ -1003,9 +1034,10 @@ docker compose up
 <!-- ============================================================
      INTERACTIVE
      ============================================================ -->
+
 ---
-layout: center
----
+
+## layout: center
 
 # 互动演示
 
@@ -1014,9 +1046,12 @@ layout: center
 <!-- ============================================================
      QUOTE
      ============================================================ -->
+
 ---
+
 layout: center
 class: quote-slide
+
 ---
 
 <div class="text-center">
@@ -1036,6 +1071,7 @@ SentimentFlow 核心价值
 <!-- ============================================================
      FUTURE
      ============================================================ -->
+
 ---
 
 # 后续方向
@@ -1067,9 +1103,12 @@ SentimentFlow 核心价值
 <!-- ============================================================
      CLOSING
      ============================================================ -->
+
 ---
+
 layout: center
 class: closing-slide
+
 ---
 
 <div class="text-center">
