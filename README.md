@@ -122,6 +122,22 @@ docker compose up -d
 - 前端 `BACKEND_API_URL=http://backend:8846`
 - `slides` 依赖 `backend`，并由 Slidev Nginx 把同源 `/api/` 代理到 `backend:8846`，这样互动演示里的现场预测不依赖浏览器直连后端端口
 
+### 5. 推送到 GitHub 自动构建 Docker 镜像
+
+仓库已提供 GitHub Actions 工作流：`.github/workflows/docker-image-on-push.yml`。每次 `push`（以及手动 `workflow_dispatch`）都会自动构建并推送以下镜像到 GHCR：
+
+- `ghcr.io/<owner>/sentimentflow-backend`
+- `ghcr.io/<owner>/sentimentflow-frontend`
+- `ghcr.io/<owner>/sentimentflow-slides`
+
+镜像标签策略：
+
+- `sha-<commit>`：每次提交唯一标签
+- `<branch>`：分支标签（例如 `main`）
+- `latest`：仅默认分支更新
+
+首次使用请确认仓库 `Actions` 已启用，并允许 `GITHUB_TOKEN` 具备 `packages: write` 权限（工作流中已声明）。
+
 ## 配置说明
 
 项目会从根目录 `.env` 或进程环境变量读取配置。不要把真实 token、密钥或私有路径提交到仓库。
